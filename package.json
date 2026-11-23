@@ -1,0 +1,12 @@
+{
+  "name": "aster-stock-desk",
+  "private": true,
+  "type": "module",
+  "description": "Walkable 3D paper-trading desk for Aster DEX stock perpetuals (GMS PMR v1.4).",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "cycle": "node bot/run.mjs",
+    "serve": "node tools/serve.mjs"
+  }
+}

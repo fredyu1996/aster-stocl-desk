@@ -1,0 +1,27 @@
+name: cloud trader
+# One paper-trading cycle per run. GitHub's own cron is unreliable at */5, so an external timer
+# (for example cron-job.org) should call workflow_dispatch every 5 minutes. The schedule below is a fallback.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'
+concurrency:
+  group: cloud-trader
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test
+      - run: node bot/run.mjs
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO || 'fredyu1996/aster-desk-data' }}
+          DATA_BRANCH: ${{ vars.DATA_BRANCH || 'stocks-state' }}

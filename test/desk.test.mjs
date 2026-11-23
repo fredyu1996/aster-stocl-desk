@@ -1,0 +1,181 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { cycle, freshState, persistable } from '../core/desk.mjs';
+import { MIN, Scanner } from '../core/pmr.mjs';
+import { economics, learn, preTrade } from '../core/reviewer.mjs';
+import { pickUniverse } from '../core/aster.mjs';
+import { Conflict, store, update } from '../core/github.mjs';
+
+const T0 = Date.parse('2026-11-23T15:00:00Z'); // 10:00 New York, a Monday
+const spec = { symbol: 'NVDAUSDT', tickSize: 0.01, stepSize: 0.01, minQty: 0.01, minNotional: 5 };
+
+function plan(over = {}) {
+  return { id: `NVDAUSDT-${T0}`, symbol: 'NVDAUSDT', direction: 1, entry: 100, stop: 99, target: 104, grade: 'A', grossRR: 4,
+    signalAt: T0, expiresAt: T0 + 60 * MIN, atr5: 0.5, fvg: { lo: 99.8, hi: 100.2 },
+    pattern: { type: 'FLAG', t: T0 - 60 * MIN, boundary: 99.5, target: 104, atr: 1 },
+    poi: { type: 'FVG', lo: 99.4, hi: 99.9, knownAt: T0 - 45 * MIN, confluence: false }, firstRetestAt: T0 - 30 * MIN, mssAt: T0 - 5 * MIN,
+    sweep: false, ...over };
+}
+
+// Bars from T0-10m to the given path of [low, high, close] per minute after T0.
+function bars(path, start = 100.5) {
+  const out = [];
+  for (let i = -10; i <= 0; i++) out.push({ t: T0 + i * MIN, o: start, h: start + 0.1, l: start - 0.1, c: start, v: 10, q: 1000, tb: 500 });
+  let prev = start;
+  path.forEach(([l, h, c], i) => { out.push({ t: T0 + (i + 1) * MIN, o: prev, h: Math.max(h, prev, c), l: Math.min(l, prev, c), c, v: 10, q: 1000, tb: 500 }); prev = c; });
+  return out;
+}
+
+function fakeScanner(p) {
+  return (symbol, series) => ({ symbol, proposals: p ? [p] : [], events: [], history: { 1: series, 5: [], 15: [], 60: [] },
+    last: series.at(-1), summary: () => ({ symbol, status: p ? 'QUALIFIED' : 'WAIT' }) });
+}
+
+function market(series, now, extra = {}) {
+  return { t: now, universe: { watch: ['NVDAUSDT'], specs: { NVDAUSDT: spec }, board: [] }, bars: { NVDAUSDT: series },
+    book: { NVDAUSDT: { bid: 100.49, ask: 100.51 } }, funding: { NVDAUSDT: { rate: 0.0001, next: T0 + 8 * 60 * MIN } }, ...extra };
+}
+
+const run = (state, series, now, p = plan()) => cycle(state, market(series, now), { now, makeScanner: fakeScanner(p) });
+
+test('approves a 2R+ proposal, sizes by 1% risk and only fills on bars that open after the order is live', () => {
+  // Price trades through 100 in minute 1, before the desk saw the proposal at T0 + 2m: no fill on that bar.
+  const path = [[99.9, 100.4, 100.3], [100.2, 100.6, 100.5], [100.3, 100.6, 100.4], [99.95, 100.4, 100.1]];
+  const s1 = run(freshState(), bars(path).slice(0, 13), T0 + 2 * MIN + 5000);
+  assert.equal(s1.decisions[0].status, 'Approved');
+  assert.equal(s1.orders.length, 1);
+  const o = s1.orders[0];
+  assert.ok(Math.abs(o.riskUSDT - 10) < 0.2, `risk ${o.riskUSDT}`);
+  assert.equal(o.activeAfter, T0 + 2 * MIN);
+  const s2 = run(s1, bars(path), T0 + 4 * MIN + 5000);
+  assert.equal(s2.positions.length, 1);
+  assert.equal(s2.positions[0].entryAt, T0 + 4 * MIN);
+  assert.equal(s2.positions[0].entry, 100);
+});
+
+test('stop wins when stop and target share a bar, and R includes fees and slippage', () => {
+  const path = [[99.9, 100.4, 100.2], [98.5, 105, 100]];
+  const s = run(freshState(), bars(path), T0 + 2 * MIN + 1, plan());
+  // order went live at T0 + 2m; feed more bars in a later cycle
+  const later = bars([[99.9, 100.4, 100.2], [100.3, 100.4, 100.35], [99.9, 100.2, 100.1], [98.5, 105, 100]]);
+  const s2 = run(s, later, T0 + 4 * MIN + 1);
+  assert.equal(s2.trades.length, 1);
+  assert.equal(s2.trades[0].reason, 'Stop');
+  assert.ok(Math.abs(s2.trades[0].r + 1) < 0.01, `planned risk includes costs, so a clean stop is −1R: ${s2.trades[0].r}`);
+  assert.equal(s.trades.length, 0);
+});
+
+test('target and 90-minute time exits close at bar prices', () => {
+  const up = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], [100.2, 104.2, 104]]);
+  const s = run(run(freshState(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
+  assert.equal(s.trades[0].reason, 'Target');
+  assert.ok(s.trades[0].r > 3, `r ${s.trades[0].r}`);
+  const flat = [[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], ...Array.from({ length: 95 }, () => [100.1, 100.3, 100.2])];
+  const t = run(run(freshState(), bars(flat).slice(0, 13), T0 + 2 * MIN + 1), bars(flat), T0 + 98 * MIN + 1);
+  assert.equal(t.trades[0].reason, 'Time exit');
+  assert.equal(t.trades[0].exitAt, t.trades[0].entryAt + 90 * MIN);
+});
+
+test('cancels the limit when the window passes or the scanner invalidates the proposal', () => {
+  const above = Array.from({ length: 70 }, () => [100.3, 100.6, 100.5]);
+  const s = run(run(freshState(), bars(above).slice(0, 13), T0 + 2 * MIN + 1), bars(above), T0 + 70 * MIN + 1);
+  assert.equal(s.orders.length, 0);
+  assert.equal(s.decisions[0].status, 'No fill');
+  const p = plan({ endedAt: T0 + 5 * MIN, endReason: '1H_CLOSE_BACK_INSIDE' });
+  const first = run(freshState(), bars(above).slice(0, 13), T0 + 2 * MIN + 1, plan());
+  const c = run(first, bars(above).slice(0, 20), T0 + 9 * MIN + 1, p);
+  assert.equal(c.decisions[0].reason, '1H_CLOSE_BACK_INSIDE');
+});
+
+test('reviewer declines low net R:R, wide spreads and approved-rule matches', () => {
+  const cfg = freshState().cfg;
+  const ctx = { cfg, equity: 1000, openNotional: 0, openCount: 0, holding: false, spec, book: null, funding: null, active: [] };
+  assert.match(preTrade(plan({ target: 101.5 }), ctx).reason, /NET_RR/);
+  assert.match(preTrade(plan(), { ...ctx, book: { bid: 99, ask: 101 } }).reason, /SPREAD/);
+  assert.match(preTrade(plan(), { ...ctx, active: [{ rule: 'avoidPattern', value: 'FLAG' }] }).reason, /RULE/);
+  assert.equal(preTrade(plan(), ctx).ok, true);
+  const e = economics(plan(), cfg);
+  assert.ok(e.netRR < 4 && e.netRR > 3);
+});
+
+test('learns rule proposals only from losing buckets in both halves, or from three matching reviews', () => {
+  const trades = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, r: -0.8, exitAt: i, plan: plan({ pattern: { type: 'HNS' } }) }));
+  const props = learn(trades, {});
+  assert.ok(props.some(p => p.rule === 'avoidPattern' && p.value === 'HNS'));
+  assert.equal(learn(trades.slice(0, 5), {}).length, 0);
+  const reviews = Object.fromEntries(trades.slice(0, 3).map(t => [t.id, { a: ['skip'], b: ['poi'] }]));
+  assert.ok(learn(trades.slice(0, 3), reviews).some(p => p.rule === 'avoidPoi' && p.value === 'FVG'));
+  assert.equal(learn(trades, {}, { 'avoidPattern:HNS': 'rejected' }).some(p => p.value === 'HNS'), false);
+});
+
+test('scanner is causal: a prefix of the bars yields exactly the prefix of the events', () => {
+  let x = 100, seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const series = [];
+  for (let i = 0; i < 4000; i++) {
+    const drift = Math.sin(i / 300) * 0.04 + (i % 900 > 820 ? 0.25 : 0);
+    const o = x; x = Math.max(5, x + drift + (rnd() - 0.5) * 0.3);
+    series.push({ t: T0 + i * MIN, o, c: x, h: Math.max(o, x) + rnd() * 0.1, l: Math.min(o, x) - rnd() * 0.1, v: 10, q: 1000, tb: 500 });
+  }
+  const full = new Scanner('TEST', series);
+  for (const cut of [1500, 2600, 3999]) {
+    const part = new Scanner('TEST', series.slice(0, cut));
+    const end = series[cut - 1].t;
+    assert.deepEqual(part.events, full.events.filter(e => e.t <= end));
+  }
+});
+
+test('universe keeps stock perps above the volume floor plus held symbols', () => {
+  const sym = (symbol, tags) => ({ symbol, status: 'TRADING', quoteAsset: 'USDT', contractType: 'PERPETUAL', underlyingSubType: tags, baseAsset: symbol,
+    filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.01' }, { filterType: 'LOT_SIZE', stepSize: '0.01', minQty: '0.01' }, { filterType: 'MIN_NOTIONAL', notional: '5' }] });
+  const info = { symbols: [sym('NVDAUSDT', ['STOCK']), sym('XAUUSDT', ['Commodities']), sym('OPENAIUSDT', ['pre-launch', 'STOCK']), sym('AAPLUSDT', ['STOCK'])] };
+  const tick = (symbol, q) => ({ symbol, quoteVolume: String(q), lastPrice: '1', priceChangePercent: '0' });
+  const u = pickUniverse(info, [tick('NVDAUSDT', 9e6), tick('XAUUSDT', 9e7), tick('OPENAIUSDT', 9e6), tick('AAPLUSDT', 1000)],
+    { universe: 10, minVolume: 300_000, always: [], exclude: [] }, ['AAPLUSDT']);
+  assert.deepEqual(u.watch, ['NVDAUSDT', 'AAPLUSDT']);
+});
+
+test('github store writes a parentless commit and refuses when the ref moved', async () => {
+  const refs = { 'stocks-state': 'c0' };
+  const blobs = {}, trees = {}, commits = { c0: { tree: { sha: 'tr0' } } };
+  trees.tr0 = { tree: [{ path: 'stock-desk-state.json', sha: 'b0' }] };
+  blobs.b0 = { content: Buffer.from('{"v":1,"n":1}').toString('base64') };
+  let n = 0;
+  const fetchImpl = async (url, { method, body }) => {
+    const u = new URL(url).pathname.replace('/repos/o/r', '');
+    const data = body && JSON.parse(body);
+    const ok = x => ({ ok: true, status: 200, json: async () => x });
+    if (method === 'GET' && u.startsWith('/git/ref/heads/')) return refs[u.split('/').pop()] ? ok({ object: { sha: refs[u.split('/').pop()] } }) : { ok: false, status: 404 };
+    if (method === 'GET' && u.startsWith('/git/commits/')) return ok(commits[u.split('/').pop()]);
+    if (method === 'GET' && u.startsWith('/git/trees/')) return ok(trees[u.split('/').pop()]);
+    if (method === 'GET' && u.startsWith('/git/blobs/')) return ok(blobs[u.split('/').pop()]);
+    if (method === 'POST' && u === '/git/blobs') { blobs[`b${++n}`] = { content: Buffer.from(data.content).toString('base64') }; return ok({ sha: `b${n}` }); }
+    if (method === 'POST' && u === '/git/trees') { trees[`tr${++n}`] = { tree: data.tree }; return ok({ sha: `tr${n}` }); }
+    if (method === 'POST' && u === '/git/commits') { assert.deepEqual(data.parents, []); commits[`c${++n}`] = { tree: { sha: data.tree } }; return ok({ sha: `c${n}` }); }
+    if (method === 'PATCH') { refs[u.split('/').pop()] = data.sha; return ok({}); }
+    throw new Error(`unexpected ${method} ${u}`);
+  };
+  const st = store({ token: 'x', repo: 'o/r', fetchImpl });
+  const { state } = await update(st, s => ({ ...s, n: s.n + 1 }));
+  assert.equal(state.n, 2);
+  assert.equal((await st.read()).state.n, 2);
+  const { ref } = await st.read();
+  refs['stocks-state'] = 'moved';
+  await assert.rejects(st.write({}, ref), Conflict);
+});
+
+test('persistable state drops chart payloads', () => {
+  const s = run(freshState(), bars([[100.4, 100.6, 100.5]]), T0 + MIN + 1);
+  s.scan = [{ symbol: 'X', h1: [1], m15: [1], m5: [1] }];
+  assert.deepEqual(persistable(s).scan, [{ symbol: 'X' }]);
+});
+
+test('an open position ignores bars from before its entry', () => {
+  const s = freshState();
+  const p = plan();
+  s.positions = [{ ...p, plan: p, qty: 10, riskUSDT: 10, netRR: 3, entryAt: T0, mark: 100 }];
+  const old = [{ t: T0 - 5 * MIN, o: 90, h: 91, l: 80, c: 85, v: 1 }, ...bars([[100.1, 100.4, 100.2]])];
+  const out = run(s, old, T0 + MIN + 1, null);
+  assert.equal(out.trades.length, 0);
+  assert.equal(out.positions[0].checkedTo, T0 + MIN);
+});

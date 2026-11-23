@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aster Stock Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ui/styles.css">
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<header id="hud"></header>
+<button id="settingsBtn" title="Settings and sync">⚙</button>
+<aside id="panel" hidden></aside>
+<div id="help">
+  <div>
+    <h1>Aster Stock Desk</h1>
+    <p>A walkable paper-trading floor for <b>Aster DEX stock perpetuals</b> (NVDA, TSLA, MU, QQQ…), running GMS PMR v1.4.</p>
+    <ul>
+      <li><b>W A S D</b> or arrows walk · <b>drag</b> to look · <b>wheel</b> steps · <b>Shift</b> runs</li>
+      <li><b>1</b> Screener · <b>2</b> Trader · <b>3</b> Reviewer · <b>4</b> Market Intel · <b>⚙</b> Settings</li>
+      <li><b>B</b> movers board (north) · <b>P</b> positions (east) · <b>V</b> review wall (south) · <b>R</b> rules + comms (west)</li>
+      <li>Click a desk, a wall or a trade card to open it · <b>Esc</b> closes · <b>H</b> toggles this help</li>
+    </ul>
+    <p class="muted">Paper only. No orders reach Aster. Click anywhere to start.</p>
+  </div>
+</div>
+<script type="module" src="ui/app.mjs"></script>
+</body>
+</html>
