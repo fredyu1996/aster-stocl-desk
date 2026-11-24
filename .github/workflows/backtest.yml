@@ -1,0 +1,42 @@
+name: backtest
+# Nightly backtest of both paper traders (PMR + SMC) on the top 10 stock perps over 180 days. REPORT ONLY: it never touches the
+# live accounts. The report goes to branch `backtest-report` of this public repo (no secrets needed); the desk's 7 Backtest
+# panel reads it from raw.githubusercontent.com. GitHub's cron can be late or skipped; run it by hand from the Actions tab too.
+on:
+  workflow_dispatch:
+    inputs:
+      days: { description: 'Days', default: '180' }
+      top: { description: 'Top N stock perps by 24h volume', default: '10' }
+  schedule:
+    - cron: '17 9 * * *'
+concurrency:
+  group: backtest
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test
+      - run: node bot/backtest.mjs
+        env:
+          BT_DAYS: ${{ inputs.days || '180' }}
+          BT_TOP: ${{ inputs.top || '10' }}
+          BT_OUT: out/stock-backtest.json
+      - name: Publish to branch backtest-report
+        run: |
+          cd out
+          git init -q -b backtest-report
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add stock-backtest.json
+          git commit -q -m "stock backtest $(date -u +%F)"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" backtest-report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

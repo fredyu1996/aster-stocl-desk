@@ -9,6 +9,7 @@ import { features, learn, ruleKey, ruleLabel } from '../core/reviewer.mjs';
 import { C, ago, drawCandles, fmt, hhmm, money, pct, tradeOverlay } from './charts.mjs';
 import { DESKS, createWorld } from './scene.mjs';
 import { createChartWall } from './wall.mjs';
+import { SMC_ADJ, SMC_SOURCE, smcCore, withSmc } from '../core/smc.mjs';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -110,9 +111,10 @@ async function refresh() {
       const sc = new Scanner(sym, market.bars[sym] ?? [], { tickSize: market.universe.specs[sym]?.tickSize });
       return [sym, { ...sc.summary(), price: sc.last?.c, h1: sc.history[60].slice(-48), m15: sc.history[15].slice(-64), m5: sc.history[5].slice(-72) }];
     }));
+    const core = await smcCore(market.info).catch(e => { status.note = `SMC Trader: ${e.message}`; return null; });
     const store_ = st();
     if (!store_) {
-      state = cycle(state, market, { by: 'browser' });
+      state = withSmc(cycle(state, market, { by: 'browser' }), market, core);
       LS.set('asd_state', persistable(state));
       status.source = 'local paper (this browser)';
       return;
@@ -121,7 +123,7 @@ async function refresh() {
     const shared = normalize(remote);
     const cloudQuiet = !shared.lastCycle || Date.now() - shared.lastCycle.t > QUIET || shared.lastCycle.by === 'browser';
     if (cloudQuiet) {
-      const res = await update(store_, s => persistable(cycle(normalize(s), market, { by: 'browser' })));
+      const res = await update(store_, s => persistable(withSmc(cycle(normalize(s), market, { by: 'browser' }), market, core)));
       state = normalize(res.state);
       status.source = `shared · this browser trades (cloud quiet${shared.cloud ? ` ${ago(shared.cloud.t)}` : ''})`;
     } else {
@@ -158,11 +160,12 @@ function open(id, spot) {
 }
 function close() { panel = null; $('#panel').hidden = true; }
 
-const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['digest', '5 Digest'], ['settings', '⚙ Settings']];
+const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['digest', '5 Digest'],
+  ['smc', '6 SMC Trader'], ['backtest', '7 Backtest'], ['settings', '⚙ Settings']];
 function renderPanel() {
   if (document.activeElement?.closest('#panel input, #panel textarea, #panel select')) return;
   const [kind, arg] = panel.split(/:(.*)/s);
-  const body = { screener, trader, reviewer, intel, settings, digest: () => digestPanel(arg), review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
+  const body = { screener, trader, reviewer, intel, settings, smc: smcPanel, backtest: backtestPanel, digest: () => digestPanel(arg), review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
   $('#panel').innerHTML = `<nav>${tabs.map(([id, label]) => `<button data-open="${id}" class="${kind === id ? 'on' : ''}">${label}</button>`).join('')}
     <button data-close title="Esc">✕</button></nav><div class="body">${body}</div>`;
   for (const cv of $('#panel').querySelectorAll('canvas[data-chart]')) paintChart(cv);
@@ -278,15 +281,18 @@ function bucketTable(title, b) {
   const rows = Object.entries(b).sort((x, y) => y[1].total - x[1].total).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.total}</td><td>${v.wins}/${v.losses}</td><td>${v.win_rate == null ? '—' : `${Math.round(v.win_rate * 100)}%`}</td><td>${r2(v.r)}</td></tr>`);
   return rows.length ? `<h3>By ${title}</h3>${table(['Value', 'n', 'W/L', 'Win rate', 'Total R'], rows)}` : '';
 }
-function digestPanel(arg) {
-  const ws = weeks(state.trades), week = arg === 'all' ? undefined : arg || ws[0];
-  const d = digest(state.trades, { week }), c = coach(state.trades, { reviews: state.reviews, cfg: state.cfg, start: state.acct.start, week });
-  const pm = filterReport(state.decisions ?? []);
+function digestPanel(arg = '') {
+  const [acct, wk] = arg.includes('|') ? arg.split('|') : ['pmr', arg];
+  const trades = acct === 'smc' ? state.smc?.trades ?? [] : state.trades;
+  const ws = weeks(trades), week = wk === 'all' ? undefined : wk || ws[0];
+  const d = digest(trades, { week }), c = coach(trades, { reviews: state.reviews, cfg: state.cfg, start: acct === 'smc' ? state.smc?.acct?.start ?? 1000 : state.acct.start, week });
+  const pm = acct === 'smc' ? [] : filterReport(state.decisions ?? []);
   const sev = { critical: 'down', warning: 'warn', info: 'muted' };
   const recent = (state.decisions ?? []).filter(x => x.status === 'Declined').slice(0, 12).map(x => `<tr><td>${hhmm(x.t)}</td><td>${x.symbol.replace('USDT', '')}</td><td>${esc(x.post?.filter ?? '')}</td>
     <td class="muted">${esc(String(x.reason).replaceAll('_', ' '))}</td><td class="${x.post?.outcome === 'MISSED_OPPORTUNITY' ? 'warn' : x.post?.outcome === 'GOOD_SKIP' ? 'up' : ''}">${esc(x.post?.outcome?.replaceAll('_', ' ') ?? 'pending')}</td><td>${x.post?.filled ? r2(x.post.r) : ''}</td></tr>`);
-  return `<h2>Digest · ${week ? `week of ${week}` : 'all time'}</h2>
-    <p>${ws.slice(0, 6).map(w => `<button data-open="digest:${w}" class="${w === week ? 'on' : ''}">${w}</button>`).join(' ')} <button data-open="digest:all" class="${!week ? 'on' : ''}">All time</button></p>
+  return `<h2>Digest · ${acct === 'smc' ? 'SMC Trader' : 'PMR Trader'} · ${week ? `week of ${week}` : 'all time'}</h2>
+    <p><button data-open="digest:pmr|" class="${acct !== 'smc' ? 'on' : ''}">PMR Trader</button> <button data-open="digest:smc|" class="${acct === 'smc' ? 'on' : ''}">SMC Trader</button></p>
+    <p>${ws.slice(0, 6).map(w => `<button data-open="digest:${acct}|${w}" class="${w === week ? 'on' : ''}">${w}</button>`).join(' ')} <button data-open="digest:${acct}|all" class="${!week ? 'on' : ''}">All time</button></p>
     ${d.trades ? `<div class="stats"><div><small>Trades</small><b>${d.trades}</b></div><div><small>Win rate</small><b>${Math.round(d.winRate * 100)}%</b></div>
       <div><small>Expectancy</small><b>${money0(d.expectancy)}</b></div><div><small>Profit factor</small><b>${d.profitFactor == null ? 'no losers' : d.profitFactor.toFixed(2)}</b></div>
       <div><small>Total</small><b class="${d.totalPnl >= 0 ? 'up' : 'down'}">${money0(d.totalPnl)} · ${r2(d.totalR)}</b></div><div><small>Avg R ± sd</small><b>${r2(d.avgR)} ± ${d.rStdev?.toFixed(2) ?? '—'}</b></div>
@@ -301,11 +307,75 @@ function digestPanel(arg) {
     <ul class="items">${c.findings.map(f => `<li class="${sev[f.severity]}">${f.severity.toUpperCase()} · ${esc(f.axis)} · ${esc(f.text)}</li>`).join('') || '<li class="muted">No findings.</li>'}</ul>
     ${Object.keys(c.rootCauses).length ? `<p class="muted">Losing-trade root causes: ${esc(Object.entries(c.rootCauses).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(' · '))}</p>` : ''}
     ${c.suggestions.length ? `<p><b>Suggestions (not applied)</b></p><ul class="items">${c.suggestions.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-    <h3>Postmortem · what the declined proposals would have done</h3>
+    ${acct === 'smc' ? '<p class="muted">The SMC Trader has no postmortem yet: its declines are the SMC engine\'s own skip reasons (6 SMC Trader). R here is the crypto desk\'s: realized P&amp;L / risk at entry.</p>' : `<h3>Postmortem · what the declined proposals would have done</h3>
     <p class="muted">Each declined proposal is replayed on completed 1m bars with the desk's own fill rules once its window ends. Missed ≥ +0.5R, good skip ≤ −0.5R. A filter needs ≥ 8 filled replays and both halves on the same side before a verdict.</p>
     ${table(['Filter', 'Declined', 'Filled', 'Missed', 'Good skip', 'Neutral', 'No fill', 'Total R', 'Verdict'], pm.map(p => `<tr><td>${esc(p.filter)}</td><td>${p.declined}${p.pending ? ` (${p.pending} pending)` : ''}</td><td>${p.filled}</td><td>${p.missed}</td><td>${p.goodSkip}</td><td>${p.neutral}</td><td>${p.noFill}</td><td>${p.filled ? r2(p.totalR) : '—'}</td><td class="muted">${esc(p.verdict)}</td></tr>`))}
-    ${recent.length ? `<h3>Recent declines</h3>${table(['Time', 'Symbol', 'Filter', 'Reason', 'Outcome', 'R'], recent)}` : ''}
+    ${recent.length ? `<h3>Recent declines</h3>${table(['Time', 'Symbol', 'Filter', 'Reason', 'Outcome', 'R'], recent)}` : ''}`}
     <p class="muted">Adapted from tradermonty/claude-trading-skills: weekly-performance-digest, trade-performance-coach, signal-postmortem. Behavior tags (FOMO, revenge) need a human executing trades, so the coach leaves them out.</p>`;
+}
+
+function smcPanel() {
+  const m = state.smc ?? {}, a = m.acct ?? { start: 1000, cash: 1000, pos: {} }, tr = m.trades ?? [], on = m.on !== false;
+  const wins = tr.filter(t => t.r > 0).length, totR = tr.reduce((x, t) => x + t.r, 0), eq = m.equity ?? a.cash;
+  const pos = Object.entries(a.pos ?? {}).map(([s, p]) => { const px = scanMap[s]?.price ?? p.entry, r = (p.side === 'L' ? px - p.entry : p.entry - px) / Math.abs(p.entry - p.stop0);
+    return `<tr><td>${s.replace('USDT', '')}</td><td>${p.side === 'L' ? 'Long' : 'Short'}</td><td>${esc(p.tf)} ${esc(p.zoneKind)}</td><td>${fmt(p.entry)}</td><td>${fmt(p.stop)} / ${fmt(p.target)}</td>
+      <td class="${r >= 0 ? 'up' : 'down'}">${r.toFixed(2)}R${p.tp1 ? ' · half off' : ''}</td><td>${hhmm(p.t)}</td></tr><tr><td colspan="7" class="muted">${esc(p.why)}</td></tr>`; });
+  const scan = (m.scan?.cands ?? []).map(c => `<tr><td>${esc(c.b)}</td><td>${c.side === 'L' ? 'Long' : 'Short'}</td><td>${esc(c.tf)} ${esc(c.zone)}</td><td>${esc(c.q ?? '—')}</td><td>${esc(c.type)}</td>
+    <td class="${c.took ? 'up' : /^MARK/.test(c.skip ?? '') ? 'warn' : 'muted'}">${c.took ? 'ENTERED' : esc(c.skip)}</td></tr>`);
+  const log = tr.slice(0, 40).map(t => `<tr><td>${new Date(t.exitAt).toLocaleDateString('en-CA')} ${hhmm(t.exitAt)}</td><td>${t.symbol.replace('USDT', '')}</td><td>${t.direction === 1 ? 'L' : 'S'}</td>
+    <td class="muted">${esc(t.reason)}</td><td class="${t.pnl >= 0 ? 'up' : 'down'}">${money(t.pnl)}</td><td>${t.r.toFixed(2)}R</td></tr>`);
+  const dec = (m.decisions ?? []).slice(0, 12).map(d => `<tr><td>${hhmm(d.t)}</td><td>${esc(d.symbol.replace('USDT', ''))}</td><td>${d.side === 'L' ? 'Long' : 'Short'}</td><td class="${d.status === 'Entered' ? 'up' : 'warn'}">${esc(d.status)}</td><td class="muted">${esc(d.reason)}</td></tr>`);
+  return `<h2>SMC Trader · second paper account</h2>
+    <p class="muted">Your crypto desk's SMC Trader (small-cap settings) running its own code (${esc(SMC_SOURCE.code)}) on the north-wall picks${state.cfg.picksOnly ? '' : ' (picks-only is off: every watched stock)'}.
+    Setup: liquidity sweep → structure shift with displacement → FVG (else OB) pullback on 15m (1h filter) or 1h (4h filter), plus continuations; never against its higher timeframe.
+    Rules in force from your crypto Reviewer: ${esc(Object.entries(SMC_ADJ).map(([k, v]) => v === true ? k : `${k} ${v}`).join(' · '))}. Your hand-drawn MSS / FVG / OB marks veto entries against them, as for the PMR Trader.
+    It steps at each 5m close (5m candles walk open positions, adverse extreme first), the same way your crypto backtester replays.</p>
+    ${m.error ? `<p class="down">Last cycle error: ${esc(m.error)}</p>` : ''}
+    <div class="stats"><div><small>Equity</small><b>${money(eq)}</b></div><div><small>Return</small><b>${pct((eq / (a.start || 1000) - 1) * 100)}</b></div>
+      <div><small>Trades</small><b>${tr.length}</b></div><div><small>Win rate</small><b>${tr.length ? Math.round(wins / tr.length * 100) : 0}%</b></div><div><small>Total R</small><b>${totR.toFixed(1)}R</b></div>
+      <div><small>Last step</small><b>${m.lastStep ? hhmm(m.lastStep) : '—'}</b></div></div>
+    <p><label class="switch"><input type="checkbox" data-smc="on" ${on ? 'checked' : ''}> SMC paper entries ${on ? 'ON' : 'OFF'}</label>
+      <span class="muted"> · start $${a.start ?? 1000} · 1% risk · max 3 open · 10× cap · half at +1.2R then trail · ${state.cfg.on ? '' : 'the desk-wide switch (2 Trader) is OFF, so no entries'}</span></p>
+    <h3>Open positions</h3>${table(['Symbol', 'Side', 'Setup', 'Entry', 'Stop / Target', 'Now', 'Since'], pos)}
+    <h3>Last scan ${m.scan ? `(${hhmm(m.scan.t)})` : ''}</h3>${scan.length ? table(['Symbol', 'Side', 'Setup', 'Quality', 'Type', 'Result'], scan) : '<p class="muted">No pick is inside an SMC entry zone right now.</p>'}
+    ${dec.length ? `<h3>Entries and mark vetoes</h3>${table(['Time', 'Symbol', 'Side', 'Result', 'Detail'], dec)}` : ''}
+    <h3>Trade log</h3>${table(['Exit', 'Symbol', '', 'Exit reason', 'P&amp;L', 'R'], log)}`;
+}
+
+// Backtest report: written nightly by .github/workflows/backtest.yml to branch backtest-report of this public repo.
+let bt = { at: 0, data: null, err: '' };
+const btURL = () => { const owner = location.hostname.endsWith('.github.io') ? location.hostname.split('.')[0] : 'fredyu1996';
+  const repo = location.hostname.endsWith('.github.io') ? location.pathname.split('/').filter(Boolean)[0] || 'aster-stocl-desk' : 'aster-stocl-desk';
+  return `https://raw.githubusercontent.com/${owner}/${repo}/backtest-report/stock-backtest.json`; };
+async function loadBacktest() {
+  if (Date.now() - bt.at < 10 * 60_000) return;
+  bt.at = Date.now();
+  try { const r = await fetch(`${btURL()}?t=${Math.floor(Date.now() / 6e5)}`, { cache: 'no-store' }); if (!r.ok) throw new Error(`HTTP ${r.status}`); bt.data = await r.json(); bt.err = ''; }
+  catch (e) { bt.err = e.message; }
+  if (panel === 'backtest') renderPanel();
+}
+const sR = s => s?.n ? `${s.avgR >= 0 ? '+' : ''}${s.avgR}R avg · ${s.totR >= 0 ? '+' : ''}${s.totR}R · ${s.win}% win · n ${s.n}` : 'no trades';
+function btBlock(name, x) {
+  const rows = o => Object.entries(o).sort((a, b) => b[1].n - a[1].n).map(([k, s]) => `<tr><td>${esc(k)}</td><td>${s.n}</td><td>${s.win}%</td><td>${s.avgR >= 0 ? '+' : ''}${s.avgR}R</td><td>${s.totR >= 0 ? '+' : ''}${s.totR}R</td><td>${s.maxDD}R</td></tr>`);
+  const h = ['Value', 'n', 'Win', 'Avg R', 'Total R', 'Max DD'];
+  const last = x.trades.slice(-15).reverse().map(t => `<tr><td>${new Date(t.t0).toLocaleDateString('en-CA')}</td><td>${esc(t.s.replace('USDT', ''))}</td><td>${t.side}</td><td>${esc(t.pattern ?? `${t.tf ?? ''} ${t.zone ?? ''}`)}</td><td class="muted">${esc(t.why)}</td><td class="${t.R >= 0 ? 'up' : 'down'}">${t.R >= 0 ? '+' : ''}${t.R}R</td></tr>`);
+  return `<h3>${name}</h3>
+    <div class="stats"><div><small>Trades</small><b>${x.all.n}</b></div><div><small>Win rate</small><b>${x.all.win ?? '—'}%</b></div><div><small>Avg R</small><b>${x.all.avgR ?? '—'}</b></div>
+      <div><small>Total R</small><b class="${x.all.totR >= 0 ? 'up' : 'down'}">${x.all.totR}R</b></div><div><small>Max drawdown</small><b>${x.all.maxDD}R</b></div><div><small>Profit factor (R)</small><b>${x.all.pf ?? '—'}</b></div></div>
+    <p>First half: ${sR(x.halves[0])}<br>Second half: ${sR(x.halves[1])}${x.all.n < 30 ? `<br><span class="warn">${x.all.n} trades: too few to judge the strategy.</span>` : ''}</p>
+    ${x.declined ? `<p class="muted">${x.proposals} PMR proposals · not taken: ${esc(Object.entries(x.declined).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(' · ') || 'none')}</p>` : ''}
+    ${x.skips ? `<p class="muted">Most common SMC skip reasons: ${esc(Object.entries(x.skips).slice(0, 6).map(([k, v]) => `${k} (${v})`).join(' · '))}</p>` : ''}
+    <details><summary>By symbol, month, exit</summary>${table(h, rows(x.bySymbol))}${table(h, rows(x.months))}${table(h, rows(x.exits))}</details>
+    ${last.length ? `<details><summary>Last 15 trades</summary>${table(['Entry', 'Symbol', 'Side', 'Setup', 'Exit', 'R'], last)}</details>` : ''}`;
+}
+function backtestPanel() {
+  loadBacktest();
+  const d = bt.data;
+  if (!d) return `<h2>Backtest</h2><p class="muted">${bt.err ? `No report yet (${esc(bt.err)}). It is written by the nightly workflow “backtest” (Actions tab → backtest → Run workflow).` : 'Loading the latest report…'}</p>`;
+  return `<h2>Backtest · ${d.days} days · ${d.symbols.length} stock perps</h2>
+    <p class="muted">${new Date(d.from).toLocaleDateString('en-CA')} → ${new Date(d.to).toLocaleDateString('en-CA')} · run ${new Date(d.t).toLocaleString('en-CA')} · ${esc(d.symbols.map(s => s.replace('USDT', '')).join(', '))}.
+      Report only: it never changes either trader. ${esc(d.notes.slice(1).join(' '))}</p>
+    ${btBlock('PMR Trader (GMS PMR v1.4)', d.pmr)}${btBlock(`SMC Trader (${esc(d.smc.source?.account ?? 'crypto desk SMC')})`, d.smc)}`;
 }
 
 const A_CHIPS = [['same', 'Same trade'], ['skip', 'Skip it'], ['flip', 'Other side'], ['later', 'Enter later / deeper'], ['earlier', 'Enter earlier'],
@@ -345,7 +415,9 @@ function settings() {
     ${num('fee', 'Taker fee per side (0.0004 = 0.04%)')}${num('slip', 'Exit slippage (0.0005 = 0.05%)')}${num('timeExitMin', 'Time exit (min)', 1)}
     <label>Always watch (comma list)<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>Exclude (comma list)<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
-    <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> Trader only takes proposals on the picks wall</label></p>
+    <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> Both traders only take setups on the picks wall</label></p>
+    <h3>3D room</h3><label>Mouse look<select data-look>${[['follow', 'Follow the mouse (no click)'], ['fast', 'Follow the mouse, faster'], ['drag', 'Only while dragging']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <p class="muted">Follow: the view turns as the mouse moves; keep the cursor at the left or right edge to keep turning. Clicks still pick desks and walls.</p>
     <h3>Shared account (GitHub sync)</h3>
     <p class="muted">With a token, this browser shows the cloud trader's account and saves your reviews there. The token stays in this browser only (localStorage). Use a fine-grained token with Contents read/write on the private data repo only. Never paste it into chat.</p>
     <form id="syncform" class="grid"><label>Data repo<input name="repo" value="${esc(sync.repo)}"></label>
@@ -370,6 +442,8 @@ $('#panel').addEventListener('click', e => {
   if (el.dataset.rule === 'remove') mutate(s => { s.rules.active = s.rules.active.filter(r => ruleKey(r) !== key); s.rules.decided[key] = 'removed'; });
 });
 $('#panel').addEventListener('change', e => {
+  if (e.target.matches('[data-look]')) { world.setLook(e.target.value); return; }
+  if (e.target.dataset.smc === 'on') { const v = e.target.checked; mutate(s => { s.smc = { ...(s.smc ?? { trades: [], decisions: [] }), on: v }; }); return; }
   const k = e.target.dataset.cfg;
   if (!k) return;
   let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
@@ -395,6 +469,7 @@ addEventListener('keydown', e => {
   const d = DESKS.find(x => x.key === e.key);
   if (d) return open(d.id);
   if (e.key === '5') return open('digest', 'reviewer');
+  if (e.key === '7') return open('backtest', 'smc');
   const k = e.key.toLowerCase();
   if (k === 'v') return open('reviewer', 'reviews');
   if (k === 'b') return openWall();
