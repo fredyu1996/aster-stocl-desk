@@ -1,4 +1,4 @@
-// Walkable 3D room: four agent desks, the Screener picks wall (north), positions wall (east),
+// Walkable 3D room: five agent desks (PMR Screener / Trader / Reviewer / Intel + the SMC Trader), the Screener picks wall (north), positions wall (east),
 // review wall (south) and the Reviewer's rules + agent comms wall (west).
 import * as THREE from 'three';
 import { C, drawCandles, drawLine, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
@@ -8,6 +8,7 @@ export const DESKS = [
   { id: 'trader', key: '2', name: 'Trader', role: 'Paper fills · stops · targets', color: 0x818cf8, x: 6, z: -4 },
   { id: 'reviewer', key: '3', name: 'Reviewer', role: 'Net R:R gate · grades · rules', color: 0xc084fc, x: -6, z: 3 },
   { id: 'intel', key: '4', name: 'Market Intel', role: 'Taker flow · volume · funding', color: 0x34d399, x: 6, z: 3 },
+  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto-desk SMC on the picks', color: 0xf472b6, x: 11, z: 3 },
 ];
 const RX = 15, RZ = 10, RH = 4.6;
 const FONT = '"Inter", system-ui, sans-serif';
@@ -119,18 +120,32 @@ export function createWorld(canvas, { onPick }) {
     solids.push([d.x - 1.9, d.z - 1.0, d.x + 1.9, d.z + 1.0]);
   }
 
-  // Walking: WASD / arrows, drag to look, wheel to step.
+  // Walking: WASD / arrows, wheel to step. Looking: the view follows the mouse without a click (Settings → Mouse look),
+  // the cursor near the left / right edge keeps turning, and drag-to-look still works (and is the only mode on touch).
   const keys = new Set();
-  let yaw = 0, pitch = -0.05, drag = null, moved = 0;
+  let yaw = 0, pitch = -0.05, drag = null, moved = 0, hoverPt = null, edge = 0;
+  const LOOK = { follow: 0.0009, fast: 0.0018, drag: 0 };
+  let look = (() => { try { return JSON.parse(localStorage.getItem('asd_look')) ?? 'follow'; } catch { return 'follow'; } })();
   addEventListener('keydown', e => { if (!e.target.closest('input,textarea,select') && !document.body.classList.contains('wall-open')) keys.add(e.code); });
   addEventListener('keyup', e => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
   canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; moved = 0; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener('pointermove', e => {
-    if (!drag) return;
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved += Math.abs(dx) + Math.abs(dy);
-    yaw -= dx * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * 0.004)); drag = { x: e.clientX, y: e.clientY };
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved += Math.abs(dx) + Math.abs(dy);
+      yaw -= dx * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * 0.004)); drag = { x: e.clientX, y: e.clientY };
+      hoverPt = null; return;
+    }
+    const k = LOOK[look] ?? 0;
+    if (!k || e.pointerType !== 'mouse' || document.body.classList.contains('wall-open')) { hoverPt = null; edge = 0; return; }
+    // Gentle enough that a desk you move the cursor towards still comes under it; the edges do the big turns.
+    if (hoverPt) { yaw -= (e.clientX - hoverPt.x) * k; pitch = Math.max(-0.9, Math.min(0.9, pitch - (e.clientY - hoverPt.y) * k * 0.7)); flight = null; }
+    hoverPt = { x: e.clientX, y: e.clientY };
+    const fx = e.clientX / innerWidth, band = 0.06;
+    edge = fx < band ? (band - fx) / band : fx > 1 - band ? -(fx - (1 - band)) / band : 0;
   });
+  canvas.addEventListener('pointerleave', () => { hoverPt = null; edge = 0; });
+  addEventListener('blur', () => { hoverPt = null; edge = 0; });
   const ray = new THREE.Raycaster();
   canvas.addEventListener('pointerup', e => {
     drag = null;
@@ -161,6 +176,7 @@ export function createWorld(canvas, { onPick }) {
     const s = (keys.has('KeyD')) - (keys.has('KeyA'));
     if (keys.has('ArrowLeft')) yaw += 1.8 * dt;
     if (keys.has('ArrowRight')) yaw -= 1.8 * dt;
+    if (edge && !drag && (LOOK[look] ?? 0)) { yaw += edge * 1.5 * dt; flight = null; }
     if (f || s) { flight = null; walk(s * sp, f * sp); }
     if (flight) {
       flight.t = Math.min(1, flight.t + Math.min(real, 0.5) * 1.4);
@@ -213,15 +229,17 @@ export function createWorld(canvas, { onPick }) {
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
     const a = s.acct;
     header(ctx, w, `OPEN POSITIONS · equity ${money(a.equity)} (${pct((a.equity / a.start - 1) * 100)}) · max DD ${fmt(a.maxDD * 100, 1)}%`, '#ffd166', 50);
-    const items = [...s.positions.map(p => ({ ...p, kind: 'OPEN' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING' }))].slice(0, 3);
+    const smcPos = Object.entries(s.smc?.acct?.pos ?? {}).map(([sym, p]) => ({ symbol: sym, direction: p.side === 'L' ? 1 : -1, entry: p.entry, stop: p.stop, target: p.target,
+      entryAt: p.t, qty: p.qty, mark: view.scanMap[sym]?.price ?? p.entry, kind: 'OPEN', who: 'SMC' }));
+    const items = [...s.positions.map(p => ({ ...p, kind: 'OPEN', who: 'PMR' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING', who: 'PMR' })), ...smcPos].slice(0, 3);
     const cw = (w - 40) / 4, top = 120, ch = h - top - 20;
     items.forEach((p, i) => {
       const bars = view.scanMap[p.symbol]?.m5 ?? [];
       const unreal = p.kind === 'OPEN' ? p.direction * ((p.mark ?? p.entry) - p.entry) * p.qty : 0;
       drawCandles(ctx, { x: 20 + i * cw, y: top, w: cw - 20, h: ch }, bars, { ...tradeOverlay(p), font: 30,
-        title: `${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind}${p.kind === 'OPEN' ? ` · ${unreal >= 0 ? '+' : ''}${fmt(unreal)} USDT` : ` @ ${fmt(p.entry)}`}` });
+        title: `${p.who} · ${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind}${p.kind === 'OPEN' ? ` · ${unreal >= 0 ? '+' : ''}${fmt(unreal)} USDT` : ` @ ${fmt(p.entry)}`}` });
     });
-    if (!items.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Flat. Waiting for a qualified 5m FVG entry.', 60, top + ch / 2); }
+    if (!items.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Both traders flat. PMR waits for a 5m FVG entry, SMC for a sweep → MSS → zone.', 60, top + ch / 2); }
     const eq = [{ v: a.start }, ...[...s.trades].reverse().reduce((acc, t) => { acc.push({ v: (acc.at(-1)?.v ?? a.start) + t.pnl }); return acc; }, [])];
     drawLine(ctx, { x: 20 + 3 * cw, y: top, w: cw - 20, h: ch }, eq, { color: '#ffd166', base: a.start, title: `Closed-trade equity · ${s.trades.length} trades`, font: 30 });
     POS.t.needsUpdate = true;
@@ -290,6 +308,14 @@ export function createWorld(canvas, { onPick }) {
       row('Equity', money(s.acct.equity)); row('Open / pending', `${s.positions.length} / ${s.orders.length}`);
       row('Closed trades', String(s.trades.length)); row('Trading', s.cfg.on ? 'ON (paper)' : 'OFF', s.cfg.on ? C.up : C.down);
       for (const p of s.positions.slice(0, 4)) row(`${p.symbol} ${p.direction === 1 ? 'L' : 'S'} ${p.qty}`, `${fmt(p.entry)} → ${fmt(p.mark)}`);
+    } else if (id === 'smc') {
+      const m = s.smc, pos = Object.entries(m?.acct?.pos ?? {}), tr = m?.trades ?? [], totR = tr.reduce((a, t) => a + t.r, 0);
+      row('Equity', m?.equity != null ? money(m.equity) : '—'); row('Open · closed', `${pos.length} · ${tr.length} (${totR >= 0 ? '+' : ''}${totR.toFixed(1)}R)`);
+      row('Trading', m?.on === false || !s.cfg.on ? 'OFF' : 'ON (paper)', m?.on === false || !s.cfg.on ? C.down : C.up);
+      if (m?.error) row('Error', m.error, C.down);
+      for (const [sym, p] of pos.slice(0, 2)) row(`${sym.replace('USDT', '')} ${p.side} ${p.tf}`, `${fmt(p.entry)} · SL ${fmt(p.stop)}`);
+      for (const c of (m?.scan?.cands ?? []).slice(0, Math.max(0, 6 - pos.length))) row(`${c.b} ${c.side} ${c.tf}`, c.took ? 'ENTERED' : c.skip, c.took ? C.up : '#94a3b8');
+      if (!m?.scan?.cands?.length) row('No setup in a zone', '');
     } else if (id === 'reviewer') {
       for (const dcs of (s.decisions ?? []).slice(0, 7)) row(`${dcs.symbol.replace('USDT', '')} ${hhmm(dcs.t)}`, `${dcs.status} · ${dcs.reason}`, dcs.status === 'Approved' ? C.up : '#fbbf24');
       if (!s.decisions?.length) row('No proposals yet', '');
@@ -309,6 +335,8 @@ export function createWorld(canvas, { onPick }) {
 
   return {
     camera,
+    get look() { return look; },
+    setLook(v) { look = v in LOOK ? v : 'follow'; hoverPt = null; edge = 0; try { localStorage.setItem('asd_look', JSON.stringify(look)); } catch { /* storage blocked */ } },
     goTo: (id, panel) => { const sp = SPOTS[id]; if (sp) goTo(sp[0], sp[1], sp[2] - (panel && innerWidth > 900 ? 0.3 : 0)); },
     boardAt: uv => {
       const cy = (1 - uv.y) * BOARD.h, col = Math.min(PICK_COLS - 1, Math.floor(uv.x * PICK_COLS)), rowI = Math.floor((cy - PICK_TOP) / ((BOARD.h - PICK_TOP) / (BOARD.rows ?? 2)));

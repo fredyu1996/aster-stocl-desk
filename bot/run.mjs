@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { loadMarket } from '../core/aster.mjs';
 import { cycle, normalize, persistable } from '../core/desk.mjs';
 import { loadPosture } from '../core/regime.mjs';
+import { smcCore, withSmc } from '../core/smc.mjs';
 import { store, update } from '../core/github.mjs';
 
 const env = process.env;
@@ -16,7 +17,8 @@ function held(state) {
 
 function summary(state, ms) {
   return { t: now, ms, run: env.GITHUB_RUN_NUMBER ?? null, equity: state.acct.equity, open: state.positions.length,
-    pending: state.orders.length, trades: state.trades.length, watch: state.lastCycle.watch };
+    pending: state.orders.length, trades: state.trades.length, watch: state.lastCycle.watch,
+    smc: state.smc ? { equity: state.smc.equity ?? null, open: Object.keys(state.smc.acct?.pos ?? {}).length, trades: state.smc.trades.length, error: state.smc.error ?? null } : null };
 }
 
 async function step(prev) {
@@ -26,7 +28,8 @@ async function step(prev) {
   const market = await loadMarket(base.cfg, held(base), { now });
   // Market posture (breadth + uptrend CSVs) changes at most twice a day: refresh hourly.
   if (!(now - (base.market?.at ?? 0) < 60 * 60_000)) market.posture = await loadPosture({ at: now }).catch(e => ({ at: now, errors: [e.message] }));
-  const next = cycle(base, market, { now, by: 'cloud' });
+  const core = await smcCore(market.info).catch(e => { console.error('SMC core:', e.message); return null; });
+  const next = withSmc(cycle(base, market, { now, by: 'cloud' }), market, core, { now });
   next.cloud = summary(next, Date.now() - now);
   return persistable(next);
 }

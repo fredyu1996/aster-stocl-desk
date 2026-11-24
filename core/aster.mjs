@@ -92,7 +92,7 @@ export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.no
   const book = Object.fromEntries(books.filter(b => universe.specs[b.symbol]).map(b => [b.symbol, { bid: +b.bidPrice, ask: +b.askPrice, t: b.time }]));
   const funding = Object.fromEntries(premium.filter(p => universe.specs[p.symbol]).map(p => [p.symbol,
     { rate: +p.lastFundingRate, next: +p.nextFundingTime, mark: +p.markPrice }]));
-  return { t: now, universe, bars, book, funding };
+  return { t: now, universe, bars, book, funding, info };
 }
 
 // Chart-only klines for the Picks wall. t = open time; `closed` is false for the forming candle.

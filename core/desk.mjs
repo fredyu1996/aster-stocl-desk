@@ -43,6 +43,7 @@ export function normalize(state) {
   s.rules = Object.assign({ active: [], decided: {}, proposals: [] }, state?.rules ?? {});
   for (const k of ['picks', 'pins', 'skips']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.marks || typeof s.marks !== 'object' || Array.isArray(s.marks)) s.marks = {};
+  if (s.smc && typeof s.smc === 'object') for (const k of ['trades', 'decisions']) if (!Array.isArray(s.smc[k])) s.smc[k] = [];
   return s;
 }
 

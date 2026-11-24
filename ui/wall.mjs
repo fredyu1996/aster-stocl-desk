@@ -433,7 +433,8 @@ export function createChartWall(root, api) {
 
   function traderNote(sym) {
     const st = api.state(), s = api.scan()[sym] ?? picks().find(p => p.symbol === sym);
-    const pos = st.positions.find(x => x.symbol === sym), ord = st.orders.find(x => x.symbol === sym);
+    const pos = st.positions.find(x => x.symbol === sym), ord = st.orders.find(x => x.symbol === sym), sp = st.smc?.acct?.pos?.[sym];
+    if (sp) return [`SMC Trader 持倉 ${sp.side === 'L' ? 'long' : 'short'} @ ${fmt(sp.entry)} · SL ${fmt(sp.stop)}`, 'up'];
     if (pos) return [`Trader 持倉 ${pos.direction === 1 ? 'long' : 'short'} @ ${fmt(pos.entry)}`, 'up'];
     if (ord) return [`Trader 掛 ${ord.direction === 1 ? 'buy' : 'sell'} limit @ ${fmt(ord.entry)}`, 'warn'];
     if (st.skips.includes(sym)) return ['你剔走咗：Trader 唔會做', 'muted'];
@@ -442,7 +443,9 @@ export function createChartWall(root, api) {
     if (s?.status === 'QUALIFIED') return ['PMR 出咗 proposal，交 Reviewer 核', 'warn'];
     const mss = latestMss(marksOf(sym));
     if (mss) return [`等 PMR setup · 你最新 ${mss.dir === 'bull' ? 'Bull' : 'Bear'} MSS → Trader 只做 ${mss.dir === 'bull' ? 'long' : 'short'}`, mss.dir === 'bull' ? 'up' : 'down'];
-    return ['等 PMR setup 完成先會落單', 'muted'];
+    const sc = (st.smc?.scan?.cands ?? []).find(c => `${c.b}USDT` === sym);
+    if (sc) return [`SMC：${sc.side === 'L' ? 'long' : 'short'} ${sc.tf} ${sc.zone} · ${sc.took ? '入咗' : sc.skip}`, sc.took ? 'up' : 'muted'];
+    return ['等 PMR / SMC setup 完成先會落單', 'muted'];
   }
   function tileHTML(sym) {
     return `<article class="cw-tile" data-sym="${esc(sym)}">

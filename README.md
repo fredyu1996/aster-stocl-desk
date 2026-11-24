@@ -12,8 +12,8 @@
 | 操作 | 按鍵 |
 | --- | --- |
 | 行路 | W A S D／方向鍵，Shift 跑，滾輪向前 |
-| 望 | 拖動滑鼠 |
-| 4 個 desk | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel · 5 Digest |
+| 望 | 唔使撳，滑鼠一郁就轉；cursor 去到左右邊會一直轉。⚙ → Mouse look 可以改成快啲，或者改返做拖住先轉 |
+| Desk / panel | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel · 5 Digest · 6 SMC Trader · 7 Backtest |
 | 牆 | B 北牆 picks wall · P 東牆持倉 · V 南牆 review wall · R 西牆規則同 agent comms |
 | 設定 | 右上 ⚙ |
 
@@ -49,6 +49,20 @@ Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅
 - 入場價落喺你標嘅反方向 FVG／OB 入面，Reviewer 拒絕。
 - 你同方向嘅 FVG／OB 撞到 PMR 嘅 15m POI 或者 5m 入場 FVG，會記做 confluence。Reviewer 有足夠數據（≥ 8 單、前後兩半都輸、≤ −3R）先會提議「只做 confluence」，要你批准先生效。
 - 舊 zone 唔會自動過期，唔啱用就擦走。 Chart wall 嘅 K 線係直接攞 Aster klines，只用嚟睇；最後一支未收嘅 K 線會淡色顯示。Scanner 同 paper 成交照舊只用已完成嘅 1m bar。
+
+## 第二個 trader：SMC Trader（6）
+
+你 crypto desk 嘅 SMC Trader（small caps 設定），用佢自己嘅 code（`vendor/smc-core.js` = aster-desk 嘅 `bot/core.js`，原封不動）喺 stock picks 上面做 paper trading，自己一個 $1,000 帳戶。
+
+- Setup 同 crypto 一樣：liquidity sweep → structure shift（displacement）→ FVG（冇就 OB）回踩，15m（睇 1h）或者 1h（睇 4h），加 continuation；唔做逆 HTF 嘅單。Crypto Reviewer 而家生效嘅規則照用：needHTF、minQ 65、needDepth、obQ、stop 0.6% beyond sweep、+1.2R 走一半。
+- 每個 5m close 行一步（同你 crypto backtester 一樣），持倉用 5m K 線逐支行（先行逆向極值）。只做 picks；你手畫嘅 MSS／FVG／OB 一樣會擋對頭嘅單。
+- 設定係 2026-11-24 由 crypto desk 抄過嚟嘅快照；crypto 嗰邊改咗，要再同步。
+
+## Backtest（7）
+
+每晚（Actions → backtest，亦可以手動 Run workflow）用兩個 trader 跑**今日成交額最大嘅 10 隻股票永續 × 180 日**，報告放喺呢個 repo 嘅 `backtest-report` branch，7 Backtest panel 直接讀。報告寫晒整體、前後兩半、每隻股、每個月、出場原因、最近嘅單。**只係報告，唔會改任何 trader。** 冇模擬：picks、你嘅標記、spread、funding；股票名單係今日嘅（下咗市嘅冇計）。
+
+本機：`BT_DAYS=7 BT_TOP=3 BT_OUT=/tmp/bt.json node bot/backtest.mjs`
 
 ## 由 claude-trading-skills 搬入嚟嘅功能
 
