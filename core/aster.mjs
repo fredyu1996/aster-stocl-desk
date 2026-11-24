@@ -94,3 +94,13 @@ export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.no
     { rate: +p.lastFundingRate, next: +p.nextFundingTime, mark: +p.markPrice }]));
   return { t: now, universe, bars, book, funding };
 }
+
+// Chart-only klines for the Picks wall. t = open time; `closed` is false for the forming candle.
+// Never used for trading decisions: the scanner and paper fills only use completed 1m bars from fetchBars.
+export const CHART_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'];
+export async function chartBars(symbol, interval, { limit = 600, endTime, get = asterGet, now = Date.now() } = {}) {
+  if (!CHART_INTERVALS.includes(interval)) throw new Error(`Unsupported chart interval ${interval}`);
+  const rows = await get('/fapi/v1/klines', { symbol, interval, limit: Math.min(1500, limit), ...(endTime ? { endTime } : {}) });
+  return (Array.isArray(rows) ? rows : []).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5], closed: +k[6] < now }))
+    .filter(b => Number.isFinite(b.t) && [b.o, b.h, b.l, b.c].every(n => n > 0));
+}

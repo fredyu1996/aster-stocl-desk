@@ -9,7 +9,8 @@ const env = process.env;
 const now = Date.now();
 
 function held(state) {
-  return [...(state?.orders ?? []), ...(state?.positions ?? [])].map(x => x.symbol);
+  // Held symbols and Fred's pinned picks are always scanned.
+  return [...(state?.orders ?? []), ...(state?.positions ?? [])].map(x => x.symbol).concat(state?.pins ?? []);
 }
 
 function summary(state, ms) {
