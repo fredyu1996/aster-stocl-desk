@@ -4,6 +4,8 @@ import { choosePicks, cycle, freshState, normalize, persistable } from '../core/
 import { MIN, Scanner } from '../core/pmr.mjs';
 import { economics, features, latestMss, learn, markCheck, preTrade } from '../core/reviewer.mjs';
 import { chartBars, pickUniverse } from '../core/aster.mjs';
+import { coach, digest, weekOf } from '../core/digest.mjs';
+import { classifyTrade, filterReport, simulatePlan } from '../core/postmortem.mjs';
 import { Conflict, store, update } from '../core/github.mjs';
 
 const T0 = Date.parse('2026-11-23T15:00:00Z'); // 10:00 New York, a Monday
@@ -271,4 +273,65 @@ test('Reviewer proposes "confluence only" when trades without Fred\'s zone lose 
     plan: plan({ pattern: { type: ['FLAG', 'TRIANGLE', 'HNS', 'DOUBLE_TOP', 'INVERSE_HNS'][i % 5] }, direction: i % 2 ? 1 : -1,
       poi: { type: i % 2 ? 'OB' : 'FVG' }, grade: 'A+', signalAt: Date.parse('2026-11-23T16:00:00Z') }) }));
   assert.ok(learn(trades, {}).some(p => p.rule === 'marksConfluenceOnly'));
+});
+
+test('postmortem replay gives the same fill, exit and R as the desk for an approved plan', () => {
+  const up = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], [100.2, 104.2, 104]]);
+  const s = run(run(freshState(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
+  const t = s.trades[0];
+  const sim = simulatePlan(t.plan, up, s.cfg, { activeAfter: T0 + 2 * MIN });
+  assert.equal(sim.reason, t.reason);
+  assert.equal(sim.entryAt, t.entryAt);
+  assert.ok(Math.abs(sim.r - t.r) < 0.01, `sim ${sim.r} vs desk ${t.r}`);
+  assert.ok(t.mfe > 3 && t.mae <= 0, `mae ${t.mae} mfe ${t.mfe}`);
+  assert.equal(classifyTrade(t), 'TRUE_POSITIVE');
+});
+
+test('a declined proposal gets a counterfactual once its window is over, grouped by the filter that declined it', () => {
+  const marks = { NVDAUSDT: [{ id: 'm', type: 'mss', dir: 'bear', t1: T0 - 30 * MIN, p1: 100.8, tf: '15m' }] };
+  const path = [[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], [100.2, 104.2, 104]];
+  const s1 = run({ ...freshState(), marks }, bars(path).slice(0, 13), T0 + 2 * MIN + 1);
+  assert.equal(s1.decisions[0].status, 'Declined');
+  assert.equal(s1.decisions[0].post, undefined); // window still open
+  const s2 = run(s1, bars(path), T0 + 4 * MIN + 1);
+  const post = s2.decisions[0].post;
+  assert.equal(post.outcome, 'MISSED_OPPORTUNITY');
+  assert.equal(post.filter, 'Your MSS mark');
+  assert.ok(post.r > 3);
+  const rep = filterReport(s2.decisions);
+  assert.equal(rep[0].filter, 'Your MSS mark');
+  assert.equal(rep[0].missed, 1);
+  assert.match(rep[0].verdict, /sample too small/);
+});
+
+const tr = (i, pnl, r, o = {}) => ({ id: `t${i}`, symbol: 'NVDAUSDT', direction: 1, pnl, r, reason: r > 0 ? 'Target' : 'Stop',
+  entryAt: Date.parse('2026-11-17T15:00:00Z') + i * 864e5, exitAt: Date.parse('2026-11-17T15:40:00Z') + i * 864e5,
+  plan: plan({ signalAt: Date.parse('2026-11-17T14:58:00Z') + i * 864e5 }), ...o });
+
+test('weekly digest: win rate, expectancy, profit factor, R stats and buckets as in the skill', () => {
+  const ts = [tr(0, 30, 3), tr(1, -10, -1), tr(2, -10, -1, { reason: 'Time exit', mae: 0.2, mfe: 0.6 }), tr(7, 20, 2)];
+  assert.equal(weekOf(ts[0].exitAt), '2026-11-16');
+  assert.equal(weekOf(ts[3].exitAt), '2026-11-23');
+  const d = digest(ts, { week: '2026-11-16' });
+  assert.equal(d.trades, 3);
+  assert.ok(Math.abs(d.winRate - 1 / 3) < 1e-9);
+  assert.ok(Math.abs(d.expectancy - 10 / 3) < 1e-9);
+  assert.equal(d.profitFactor, 1.5);
+  assert.equal(d.avgMaeR, 0); // MAE clamped to <= 0 on read
+  assert.equal(d.by.exit['Time exit'].losses, 1);
+  assert.equal(digest(ts).trades, 4);
+  assert.equal(digest([tr(0, 5, 0.5)]).profitFactor, null);
+});
+
+test('coach: findings cite evidence, verdict ladder, no breach claimed where no limit exists', () => {
+  const ts = [tr(0, -16, -1.6), tr(1, -10, -1, { plan: plan({ signalAt: Date.parse('2026-11-18T14:30:00Z') }), entryAt: Date.parse('2026-11-18T15:00:00Z') }),
+    tr(2, -10, -1, { plan: { ...plan(), market: { rec: 'REDUCE_ONLY' } } })];
+  const c = coach(ts, { reviews: {}, start: 1000 });
+  assert.equal(c.verdict, 'REVIEW_REQUIRED');
+  assert.ok(c.findings.some(f => f.severity === 'critical' && /1.60R/.test(f.text)));
+  assert.ok(c.findings.some(f => f.axis === 'execution' && /30 min/.test(f.text)));
+  assert.ok(c.findings.some(f => f.axis === 'regime' && /not a rule breach/.test(f.text)));
+  assert.ok(c.findings.some(f => /3 losses in a row.*unclear/.test(f.text)));
+  assert.deepEqual(c.rootCauses, { risk_sizing: 1, execution: 1, market_environment: 1 });
+  assert.equal(coach([tr(0, 20, 2)], { reviews: { t0: { agree: true } } }).verdict, 'OK');
 });

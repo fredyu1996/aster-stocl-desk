@@ -21,6 +21,8 @@ node tools/serve.mjs                       # desk on http://127.0.0.1:4180
 
 Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI change, open the desk in Playwright, walk to each wall (P, V, R), open each panel (1–4, ⚙), open the Picks wall (B), draw a mark, switch a timeframe, and check for page errors. jsDelivr may be blocked in the sandbox: install `three@0.149.0` from npm and route the import-map URL to it. After a strategy or account change, run the tests and a real cycle.
 
+`test/regime.test.mjs` compares the regime port with the original Python skills. `test/fixtures/regime_expected.json` was produced by running their calculators (`.claude/skills/*/scripts`, plus their `scorer.py`) on `test/fixtures/uptrend_*.csv` and synthetic breadth CSVs; regenerate it the same way if you re-vendor the skills. `.claude/skills/` holds six vendored claude-trading-skills (MIT, see its README) for use from Claude.
+
 ## Code map
 
 | File | Responsibility |
@@ -29,6 +31,9 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 | `core/aster.mjs` | Aster REST (`fapi.asterdex.com`), stock-perp universe (`underlyingSubType` contains `STOCK`, not `pre-launch`), 1m bars (6,000 = 100 h), book, funding. |
 | `core/reviewer.mjs` | Net R:R economics, `preTrade` gate and sizing, `grade` A–F, `learn` rule proposals from trades and Fred's reviews. |
 | `core/desk.mjs` | State schema, paper fills / stops / targets / time exits on 1m bars, one `cycle` shared by browser and cloud. `choosePicks` (the north-wall shortlist). |
+| `core/regime.mjs` | US market posture ported from claude-trading-skills: market-breadth-analyzer, uptrend-analyzer, exposure-coach (breadth + uptrend + sector inputs). `pyRound` = Python round. |
+| `core/postmortem.mjs` | signal-postmortem adaptation: replays declined proposals with the desk's fill rules (`simulatePlan`), outcome classes, per-filter report. |
+| `core/digest.mjs` | weekly-performance-digest + trade-performance-coach adaptations (Digest panel, key 5). |
 | `core/github.mjs` | State on the private data repo: parentless commit per save, force-updated, re-read ref before write, `update` retries. |
 | `bot/run.mjs` | Cloud cycle (GitHub Actions `cloud-trader.yml`). `STATE_IN`/`STATE_OUT` for local files. |
 | `ui/scene.mjs` | three.js room: desks, figures, four wall screens (north = picks), walking and picking. |
@@ -44,6 +49,7 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 5. Learned rules only gate trades after Fred approves them (`rules.active`). Rejected / removed keys stay in `rules.decided` so they are not proposed again.
 6. Picks: `state.picks` = held symbols, then Fred's `pins`, then furthest PMR stage, then 24h volume, minus his `skips` (a held symbol stays). Size `cfg.picks` (6). With `cfg.picksOnly` (default on) a proposal outside the picks is declined `NOT_IN_PICKS`. Pins are always scanned (passed with held symbols to `loadMarket`).
 7. Fred's chart marks (`state.marks[symbol]`, FVG / OB / MSS / liquidity / HH HL LH LL, times are chart-bar open times). Fred chose (2026-11-23) "veto + record": `markCheck` declines a proposal when his latest hand-drawn MSS (by bar time, at or before the signal) points the other way, or the entry sits inside one of his opposite-direction FVG / OB; a same-direction FVG / OB overlapping the 15m POI or 5m entry FVG is recorded as `plan.marks.confluence` (feature `marks`, rule `marksConfluenceOnly` only after his approval). Auto marks and marks placed after the signal bar never count. Marks never size a trade. Order of checks: trading off → not in picks → marks veto → `preTrade`. Chart-wall candles (`chartBars`) are display only; trading stays on completed 1m bars.
+8. Market posture (`state.market`, refreshed at most hourly by whoever runs the cycle), the postmortem (`decision.post`) and the digest / coach are record and display only. They never gate, size or cancel a trade. Each proposal stores `plan.market` (exposure recommendation, ceiling, zones) and each trade `marketAtExit`, `mae`, `mfe` (R of planned risk per unit).
 
 ## Open items
 
@@ -53,3 +59,4 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 - No backtester panel and no news feed yet.
 - Marks veto has no expiry: an old opposite FVG / OB keeps vetoing until Fred erases it. Ask before adding mitigation / age rules.
 - Manual paper orders from the Picks wall are not built.
+- Exposure coach runs with 3 of its 8 inputs (no regime, top-risk, FTD, theme, institutional: those skills need FMP or charts), so it always applies a 20-point haircut and never says NEW_ENTRY_ALLOWED. Fred did not choose the drawdown circuit breaker / discipline gate.

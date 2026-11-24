@@ -2,6 +2,9 @@ import { isStock, loadMarket } from '../core/aster.mjs';
 import { choosePicks, cycle, freshState, normalize, persistable, pickInput } from '../core/desk.mjs';
 import { store, update } from '../core/github.mjs';
 import { Scanner } from '../core/pmr.mjs';
+import { coach, digest, weeks } from '../core/digest.mjs';
+import { filterReport } from '../core/postmortem.mjs';
+import { loadPosture } from '../core/regime.mjs';
 import { features, learn, ruleKey, ruleLabel } from '../core/reviewer.mjs';
 import { C, ago, drawCandles, fmt, hhmm, money, pct, tradeOverlay } from './charts.mjs';
 import { DESKS, createWorld } from './scene.mjs';
@@ -97,6 +100,11 @@ async function refresh() {
     try {
       market = await loadMarket(state.cfg, held(state), { cache });
       status.feed = 'Live'; status.at = market.t; status.note = '';
+      // Market posture (breadth + uptrend CSVs) refreshes at most hourly; display and record only.
+      if (!(market.t - (state.market?.at ?? 0) < 60 * 60_000) && !(market.t - (cache.postureAt ?? 0) < 60 * 60_000)) {
+        cache.postureAt = market.t;
+        market.posture = await loadPosture({ at: market.t }).catch(e => ({ at: market.t, errors: [e.message] }));
+      }
     } catch (e) { status.feed = 'Offline'; status.note = e.message; return; }
     scanMap = Object.fromEntries(market.universe.watch.map(sym => {
       const sc = new Scanner(sym, market.bars[sym] ?? [], { tickSize: market.universe.specs[sym]?.tickSize });
@@ -150,11 +158,11 @@ function open(id, spot) {
 }
 function close() { panel = null; $('#panel').hidden = true; }
 
-const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['settings', '⚙ Settings']];
+const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['digest', '5 Digest'], ['settings', '⚙ Settings']];
 function renderPanel() {
   if (document.activeElement?.closest('#panel input, #panel textarea, #panel select')) return;
   const [kind, arg] = panel.split(/:(.*)/s);
-  const body = { screener, trader, reviewer, intel, settings, review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
+  const body = { screener, trader, reviewer, intel, settings, digest: () => digestPanel(arg), review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
   $('#panel').innerHTML = `<nav>${tabs.map(([id, label]) => `<button data-open="${id}" class="${kind === id ? 'on' : ''}">${label}</button>`).join('')}
     <button data-close title="Esc">✕</button></nav><div class="body">${body}</div>`;
   for (const cv of $('#panel').querySelectorAll('canvas[data-chart]')) paintChart(cv);
@@ -240,11 +248,64 @@ function reviewer() {
     <p class="muted">Review a trade: walk to the south wall (V) and click its card, or click a row in Trader → Trade log.</p>`;
 }
 
+const zoneClass = z => ['Strong', 'Healthy', 'Strong Bull', 'Bull'].includes(z) ? 'up' : ['Neutral'].includes(z) ? 'warn' : 'down';
+function postureHTML() {
+  const m = state.market;
+  if (!m) return '<p class="muted">Market posture loads within a minute of the first cycle (TraderMonty public breadth + uptrend CSVs).</p>';
+  const ex = m.exposure, b = m.breadth, u = m.uptrend;
+  const rec = ex?.recommendation ?? '—';
+  return `<div class="stats">
+      <div><small>Exposure coach</small><b class="${rec === 'NEW_ENTRY_ALLOWED' ? 'up' : rec === 'REDUCE_ONLY' ? 'warn' : 'down'}">${esc(rec.replaceAll('_', ' '))}</b></div>
+      <div><small>Exposure ceiling</small><b>${ex ? `${ex.ceiling}%` : '—'}</b></div>
+      <div><small>S&amp;P 500 breadth (${esc(b?.date ?? 'n/a')})</small><b class="${b ? zoneClass(b.zone) : ''}">${b ? `${b.composite} ${esc(b.zone)}` : 'unavailable'}</b></div>
+      <div><small>Uptrend ratio (${esc(u?.date ?? 'n/a')})</small><b class="${u ? zoneClass(u.zone) : ''}">${u ? `${u.composite} ${esc(u.zone)}` : 'unavailable'}</b></div>
+      <div><small>Sector health</small><b>${m.sector ?? '—'}</b></div>
+      <div><small>Participation · confidence</small><b>${esc(ex?.participation ?? '—')} · ${esc(ex?.confidence ?? '—')}</b></div></div>
+    <p class="muted">${b ? `Breadth 8MA ${fmt(b.ma8, 3)}${b.pink_zone ? ' · PINK ZONE (200MA falling, 8MA below it)' : ''}${b.caution ? ' · caution: 8MA turning down' : ''} · ` : ''}${u ? `uptrend ratio ${pct(u.ratio * 100).replace('+', '')}${u.warnings.length ? ` · warnings: ${esc(u.warnings.join(', '))}` : ''} · ` : ''}missing inputs: ${esc((ex?.missing ?? []).join(', ') || 'none')}${ex?.missing_critical?.length ? ` (critical missing: ${esc(ex.missing_critical.join(', '))}, so the coach takes ${ex.missing_critical.length * 10} points off and cannot say NEW ENTRY ALLOWED)` : ''}.
+    Updated ${ago(m.at)} ago.${m.errors?.length ? ` <span class="warn">Data: ${esc(m.errors.join('; '))}</span>` : ''}</p>
+    <p class="muted">Ported from tradermonty/claude-trading-skills (market-breadth-analyzer, uptrend-analyzer, exposure-coach). US-market context recorded on every proposal; it does not gate or size trades.</p>`;
+}
 function intel() {
   const items = (state.intel ?? []).map(i => `<tr><td>${hhmm(i.t)}</td><td>${i.type}</td><td>${esc(i.title)}</td><td class="muted">${esc(i.detail)}</td></tr>`);
   const movers = (state.board ?? []).slice(0, 30).map(r => `<tr><td>${r.symbol.replace('USDT', '')}</td><td>${fmt(r.last)}</td><td class="${r.change >= 0 ? 'up' : 'down'}">${pct(r.change)}</td><td>${(r.quoteVolume / 1e6).toFixed(2)}M</td></tr>`);
-  return `<h2>Market Intel</h2><p class="muted">Aster taker-buy vs taker-sell notional and 5m volume spikes (≥ 2.5× the prior 20 bars) on the watched stock perps. No news feed yet.</p>
+  return `<h2>Market Intel</h2><h3>US market posture</h3>${postureHTML()}<h3>Aster tape</h3><p class="muted">Aster taker-buy vs taker-sell notional and 5m volume spikes (≥ 2.5× the prior 20 bars) on the watched stock perps. No news feed yet.</p>
     ${table(['Time', 'Type', 'Signal', 'Detail'], items)}<h3>Stock perps by 24h volume</h3>${table(['Symbol', 'Last', '24h', 'Volume'], movers)}`;
+}
+
+const money0 = n => Number.isFinite(n) ? money(n) : '—';
+const r2 = n => Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}R` : '—';
+function bucketTable(title, b) {
+  const rows = Object.entries(b).sort((x, y) => y[1].total - x[1].total).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.total}</td><td>${v.wins}/${v.losses}</td><td>${v.win_rate == null ? '—' : `${Math.round(v.win_rate * 100)}%`}</td><td>${r2(v.r)}</td></tr>`);
+  return rows.length ? `<h3>By ${title}</h3>${table(['Value', 'n', 'W/L', 'Win rate', 'Total R'], rows)}` : '';
+}
+function digestPanel(arg) {
+  const ws = weeks(state.trades), week = arg === 'all' ? undefined : arg || ws[0];
+  const d = digest(state.trades, { week }), c = coach(state.trades, { reviews: state.reviews, cfg: state.cfg, start: state.acct.start, week });
+  const pm = filterReport(state.decisions ?? []);
+  const sev = { critical: 'down', warning: 'warn', info: 'muted' };
+  const recent = (state.decisions ?? []).filter(x => x.status === 'Declined').slice(0, 12).map(x => `<tr><td>${hhmm(x.t)}</td><td>${x.symbol.replace('USDT', '')}</td><td>${esc(x.post?.filter ?? '')}</td>
+    <td class="muted">${esc(String(x.reason).replaceAll('_', ' '))}</td><td class="${x.post?.outcome === 'MISSED_OPPORTUNITY' ? 'warn' : x.post?.outcome === 'GOOD_SKIP' ? 'up' : ''}">${esc(x.post?.outcome?.replaceAll('_', ' ') ?? 'pending')}</td><td>${x.post?.filled ? r2(x.post.r) : ''}</td></tr>`);
+  return `<h2>Digest · ${week ? `week of ${week}` : 'all time'}</h2>
+    <p>${ws.slice(0, 6).map(w => `<button data-open="digest:${w}" class="${w === week ? 'on' : ''}">${w}</button>`).join(' ')} <button data-open="digest:all" class="${!week ? 'on' : ''}">All time</button></p>
+    ${d.trades ? `<div class="stats"><div><small>Trades</small><b>${d.trades}</b></div><div><small>Win rate</small><b>${Math.round(d.winRate * 100)}%</b></div>
+      <div><small>Expectancy</small><b>${money0(d.expectancy)}</b></div><div><small>Profit factor</small><b>${d.profitFactor == null ? 'no losers' : d.profitFactor.toFixed(2)}</b></div>
+      <div><small>Total</small><b class="${d.totalPnl >= 0 ? 'up' : 'down'}">${money0(d.totalPnl)} · ${r2(d.totalR)}</b></div><div><small>Avg R ± sd</small><b>${r2(d.avgR)} ± ${d.rStdev?.toFixed(2) ?? '—'}</b></div>
+      <div><small>Avg win / loss</small><b>${money0(d.avgWin)} / ${money0(d.avgLoss)}</b></div><div><small>Hold W / L</small><b>${d.holdWinMin?.toFixed(0) ?? '—'} / ${d.holdLossMin?.toFixed(0) ?? '—'} min</b></div>
+      <div><small>Avg MAE / MFE</small><b>${d.maeSamples ? `${d.avgMaeR.toFixed(2)} / ${d.avgMfeR.toFixed(2)}R` : 'n/a'}</b></div></div>
+      ${d.smallSample ? `<p class="warn">${d.trades} trades: treat this as directional, not conclusive.</p>` : ''}
+      ${bucketTable('outcome', d.by.outcome)}${bucketTable('exit reason', d.by.exit)}${bucketTable('1H pattern', d.by.pattern)}${bucketTable('your marks', d.by.marks)}${bucketTable('market posture at signal', d.by.posture)}`
+      : '<p class="muted">No closed trades in this period.</p>'}
+    <h3>Coach · ${esc(c.verdict.replaceAll('_', ' '))}</h3>
+    <div class="stats"><div><small>Risk</small><b>${c.scores.risk}</b></div><div><small>Execution</small><b>${c.scores.execution}</b></div><div><small>Process</small><b>${c.scores.process}</b></div>
+      <div><small>Regime context</small><b>${c.scores.regime}</b></div><div><small>Your reviews</small><b>${c.reviewQuality == null ? '—' : `${c.reviewQuality}%`}</b></div></div>
+    <ul class="items">${c.findings.map(f => `<li class="${sev[f.severity]}">${f.severity.toUpperCase()} · ${esc(f.axis)} · ${esc(f.text)}</li>`).join('') || '<li class="muted">No findings.</li>'}</ul>
+    ${Object.keys(c.rootCauses).length ? `<p class="muted">Losing-trade root causes: ${esc(Object.entries(c.rootCauses).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(' · '))}</p>` : ''}
+    ${c.suggestions.length ? `<p><b>Suggestions (not applied)</b></p><ul class="items">${c.suggestions.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    <h3>Postmortem · what the declined proposals would have done</h3>
+    <p class="muted">Each declined proposal is replayed on completed 1m bars with the desk's own fill rules once its window ends. Missed ≥ +0.5R, good skip ≤ −0.5R. A filter needs ≥ 8 filled replays and both halves on the same side before a verdict.</p>
+    ${table(['Filter', 'Declined', 'Filled', 'Missed', 'Good skip', 'Neutral', 'No fill', 'Total R', 'Verdict'], pm.map(p => `<tr><td>${esc(p.filter)}</td><td>${p.declined}${p.pending ? ` (${p.pending} pending)` : ''}</td><td>${p.filled}</td><td>${p.missed}</td><td>${p.goodSkip}</td><td>${p.neutral}</td><td>${p.noFill}</td><td>${p.filled ? r2(p.totalR) : '—'}</td><td class="muted">${esc(p.verdict)}</td></tr>`))}
+    ${recent.length ? `<h3>Recent declines</h3>${table(['Time', 'Symbol', 'Filter', 'Reason', 'Outcome', 'R'], recent)}` : ''}
+    <p class="muted">Adapted from tradermonty/claude-trading-skills: weekly-performance-digest, trade-performance-coach, signal-postmortem. Behavior tags (FOMO, revenge) need a human executing trades, so the coach leaves them out.</p>`;
 }
 
 const A_CHIPS = [['same', 'Same trade'], ['skip', 'Skip it'], ['flip', 'Other side'], ['later', 'Enter later / deeper'], ['earlier', 'Enter earlier'],
@@ -333,6 +394,7 @@ addEventListener('keydown', e => {
   if (e.target.closest('input,textarea,select')) return;
   const d = DESKS.find(x => x.key === e.key);
   if (d) return open(d.id);
+  if (e.key === '5') return open('digest', 'reviewer');
   const k = e.key.toLowerCase();
   if (k === 'v') return open('reviewer', 'reviews');
   if (k === 'b') return openWall();

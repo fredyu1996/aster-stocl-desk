@@ -1,6 +1,7 @@
 // Desk state and one trading cycle. The same code runs in the browser and in the cloud bot (bot/run.mjs).
 // Paper only: fills, stops and targets are simulated on completed Aster 1m bars.
 import { MIN, Scanner, intel } from './pmr.mjs';
+import { postmortem } from './postmortem.mjs';
 import { grade, learn, markCheck, preTrade, ruleKey } from './reviewer.mjs';
 
 export const START = 1000;
@@ -31,7 +32,7 @@ export function freshState() {
   return { v: 1, cfg: { ...DEFAULT_CFG }, acct: { start: START, balance: START, equity: START, peak: START, maxDD: 0 },
     seen: {}, orders: [], positions: [], trades: [], decisions: [], events: [], intel: [], reviews: {},
     rules: { active: [], decided: {}, proposals: [] }, scan: [], board: [], cloud: null, lastCycle: null,
-    picks: [], pins: [], skips: [], marks: {} };
+    picks: [], pins: [], skips: [], marks: {}, market: null };
 }
 
 export function normalize(state) {
@@ -57,7 +58,7 @@ function closePosition(state, p, bar, price, reason, cfg) {
   const fees = (p.entry + price) * p.qty * cfg.fee;
   const pnl = fix(gross - fees - (p.fundingPaid ?? 0));
   state.acct.balance = fix(state.acct.balance + pnl);
-  const trade = { ...p, exit: price, exitAt: bar.t, reason, pnl, fees: fix(fees), r: fix(pnl / p.riskUSDT) };
+  const trade = { ...p, exit: price, exitAt: bar.t, reason, pnl, fees: fix(fees), r: fix(pnl / p.riskUSDT), marketAtExit: state.market?.exposure?.recommendation ?? null };
   trade.grade = grade(trade);
   state.trades.unshift(trade);
   state.positions = state.positions.filter(x => x.id !== p.id);
@@ -72,6 +73,12 @@ function manage(state, p, bars, cfg, funding) {
     if (b.t <= p.checkedTo || b.t < p.entryAt) continue;
     p.checkedTo = b.t;
     p.mark = b.c;
+    // MAE / MFE in R of planned risk per unit (for the weekly digest).
+    const unit = p.riskUSDT / p.qty;
+    if (unit > 0) {
+      p.mae = fix(Math.min(p.mae ?? 0, (d === 1 ? b.l - p.entry : p.entry - b.h) / unit));
+      p.mfe = fix(Math.max(p.mfe ?? 0, (d === 1 ? b.h - p.entry : p.entry - b.l) / unit));
+    }
     if (p.fundNext && b.t >= p.fundNext) {
       p.fundingPaid = fix((p.fundingPaid ?? 0) + d * (p.fundRate ?? 0) * p.entry * p.qty);
       p.fundNext = p.fundNext + 8 * 60 * MIN;
@@ -129,6 +136,8 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
   const state = normalize(structuredClone(input));
   const cfg = state.cfg;
   const { universe, bars, book, funding } = market;
+  // Market posture (core/regime.mjs) is loaded at most hourly by the runner; record only, never a gate.
+  if (market.posture && !(state.market?.at > market.posture.at)) state.market = market.posture;
   const scanners = {};
   const intelItems = [];
   for (const symbol of universe.watch) {
@@ -155,6 +164,8 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     const openNotional = state.positions.reduce((s, p) => s + p.entry * p.qty, 0) + state.orders.reduce((s, o) => s + o.entry * o.qty, 0);
     const mk = markCheck(plan, state.marks[plan.symbol]);
     plan.marks = mk.summary;
+    const ex = state.market?.exposure;
+    plan.market = ex ? { rec: ex.recommendation, ceiling: ex.ceiling, breadth: state.market.breadth?.zone ?? null, uptrend: state.market.uptrend?.zone ?? null, at: state.market.at } : null;
     const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : cfg.picksOnly && !picked.has(plan.symbol) ? { ok: false, reason: 'NOT_IN_PICKS' }
       : mk.veto ? { ok: false, reason: mk.veto } : preTrade(plan, {
       cfg, equity: equityOf(state), openNotional, openCount: state.positions.length + state.orders.length,
@@ -174,6 +185,8 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     state.orders.push(order);
     work(state, order, bars[plan.symbol] ?? [], scanners[plan.symbol], cfg, funding[plan.symbol]);
   }
+
+  postmortem(state, { bars, scanners, cfg, now });
 
   const equity = equityOf(state);
   Object.assign(state.acct, { equity, peak: Math.max(state.acct.peak, equity) });
