@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cycle, freshState, persistable } from '../core/desk.mjs';
+import { choosePicks, cycle, freshState, normalize, persistable } from '../core/desk.mjs';
 import { MIN, Scanner } from '../core/pmr.mjs';
 import { economics, learn, preTrade } from '../core/reviewer.mjs';
-import { pickUniverse } from '../core/aster.mjs';
+import { chartBars, pickUniverse } from '../core/aster.mjs';
 import { Conflict, store, update } from '../core/github.mjs';
 
 const T0 = Date.parse('2026-11-23T15:00:00Z'); // 10:00 New York, a Monday
@@ -178,4 +178,50 @@ test('an open position ignores bars from before its entry', () => {
   const out = run(s, old, T0 + MIN + 1, null);
   assert.equal(out.trades.length, 0);
   assert.equal(out.positions[0].checkedTo, T0 + MIN);
+});
+
+test('picks: held, then pins, then furthest PMR stage, then 24h volume; skips are left out', () => {
+  const scan = [['AAA', 'WAIT'], ['BBB', 'WAIT_RETEST'], ['CCC', 'QUALIFIED'], ['DDD', 'WAIT'], ['EEE', 'WAIT'], ['FFF', 'POI_TOUCHED']]
+    .map(([symbol, status]) => ({ symbol, status }));
+  const board = ['DDD', 'AAA', 'EEE', 'BBB', 'CCC', 'FFF'].map(symbol => ({ symbol }));
+  const picks = choosePicks(scan, { board, n: 3 });
+  assert.deepEqual(picks.map(p => p.symbol), ['CCC', 'FFF', 'BBB']);
+  assert.deepEqual(choosePicks(scan, { board, n: 3, pins: ['EEE'], skips: ['CCC'] }).map(p => [p.symbol, p.why]),
+    [['EEE', 'pinned'], ['FFF', 'setup'], ['BBB', 'setup']]);
+  // Held and pinned symbols stay even past n; a held symbol stays even when skipped.
+  assert.deepEqual(choosePicks(scan, { board, n: 1, pins: ['DDD'], held: ['AAA'], skips: ['AAA'] }).map(p => p.symbol), ['AAA', 'DDD']);
+});
+
+test('the Trader only takes proposals on picks unless picksOnly is off', () => {
+  const series = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5]]);
+  const skipped = { ...freshState(), skips: ['NVDAUSDT'] };
+  const s = run(skipped, series, T0 + 2 * MIN + 1);
+  assert.equal(s.decisions[0].status, 'Declined');
+  assert.equal(s.decisions[0].reason, 'NOT_IN_PICKS');
+  assert.equal(s.orders.length, 0);
+  assert.deepEqual(s.picks, []);
+  const open = run({ ...skipped, cfg: { ...freshState().cfg, picksOnly: false } }, series, T0 + 2 * MIN + 1);
+  assert.equal(open.decisions[0].status, 'Approved');
+  const picked = run(freshState(), series, T0 + 2 * MIN + 1);
+  assert.deepEqual(picked.picks.map(p => [p.symbol, p.why]), [['NVDAUSDT', 'setup']]);
+  assert.equal(picked.decisions[0].status, 'Approved');
+});
+
+test("Fred's marks, pins and skips survive a cycle and the save, and bad values normalize", () => {
+  const marks = { NVDAUSDT: [{ id: 'm1', type: 'fvg', dir: 'bull', t1: T0, t2: T0 + 3 * MIN, p1: 100, p2: 101, tf: '15m' }] };
+  const s = persistable(run({ ...freshState(), marks, pins: ['NVDAUSDT'] }, bars([[100.4, 100.6, 100.5]]), T0 + MIN + 1, null));
+  assert.deepEqual(s.marks, marks);
+  assert.deepEqual(s.pins, ['NVDAUSDT']);
+  const n = normalize({ marks: [], pins: 'x', skips: null });
+  assert.deepEqual([n.marks, n.pins, n.skips], [{}, [], []]);
+});
+
+test('chart klines use open time and flag the forming candle', async () => {
+  const now = T0 + 30 * MIN;
+  const rows = [[T0, '1', '2', '0.5', '1.5', '10', T0 + 15 * MIN - 1], [T0 + 15 * MIN, '1.5', '2', '1', '1.8', '4', T0 + 30 * MIN + 15 * MIN - 1]];
+  let asked;
+  const out = await chartBars('NVDAUSDT', '15m', { now, get: async (path, params) => { asked = params; return rows; } });
+  assert.deepEqual(out.map(b => [b.t, b.c, b.closed]), [[T0, 1.5, true], [T0 + 15 * MIN, 1.8, false]]);
+  assert.equal(asked.interval, '15m');
+  await assert.rejects(chartBars('NVDAUSDT', '2h', { get: async () => rows }));
 });

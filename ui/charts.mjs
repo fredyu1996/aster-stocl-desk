@@ -2,6 +2,23 @@
 export const C = { bg: '#0b1120', grid: 'rgba(120,150,210,.12)', text: '#9fb1d4', up: '#34d399', down: '#f87171',
   entry: '#60a5fa', stop: '#f87171', target: '#34d399', zone: 'rgba(250,204,21,.18)', zoneEdge: 'rgba(250,204,21,.7)', boundary: '#c084fc' };
 
+export const statusColor = s => ({ QUALIFIED: '#fbbf24', LTF_CONFIRMED: '#f97316', POI_TOUCHED: '#fb923c', WAIT_RETEST: '#38bdf8', WAIT_POI: '#38bdf8',
+  PATTERN_CONFIRMED: '#38bdf8', SKIPPED: '#64748b', EXPIRED: '#64748b', CANCELLED: '#64748b' })[s] ?? '#475569';
+
+// Fred's chart marks (state.marks[symbol]) as drawCandles overlays, for the wall texture.
+export function marksOverlay(list = []) {
+  const zones = [], lines = [], marks = [];
+  for (const m of list) {
+    const col = m.dir === 'bear' ? C.down : C.up;
+    if (m.type === 'fvg' || m.type === 'ob') zones.push({ lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2), from: m.t1,
+      color: m.dir === 'bear' ? 'rgba(248,113,113,.18)' : 'rgba(52,211,153,.18)', edge: col, label: m.type.toUpperCase() });
+    else if (m.type === 'mss') lines.push({ price: m.p1, color: col, label: 'MSS', from: m.t1 });
+    else if (m.type === 'liq') lines.push({ price: m.p1, color: '#fbbf24', label: m.side === 'SSL' ? 'SSL' : 'BSL', from: m.t1, dash: [2, 4] });
+    else if (m.type === 'tag') marks.push({ t: m.t1, price: m.p1, color: m.label === 'HH' || m.label === 'HL' ? C.up : C.down, label: m.label, above: String(m.label)[1] === 'H' });
+  }
+  return { zones, lines, marks };
+}
+
 export function fmt(n, d = 2) {
   if (!Number.isFinite(n)) return '—';
   const a = Math.abs(n);
@@ -39,8 +56,8 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
   for (const z of zones) {
     const x0 = Math.max(x + pad.l, z.from ? X(z.from) : x + pad.l), x1 = z.to ? Math.min(X(z.to), x + w - pad.r) : x + w - pad.r;
     ctx.fillStyle = z.color ?? C.zone; ctx.fillRect(x0, Y(z.hi), Math.max(2, x1 - x0), Math.max(1, Y(z.lo) - Y(z.hi)));
-    ctx.strokeStyle = C.zoneEdge; ctx.strokeRect(x0, Y(z.hi), Math.max(2, x1 - x0), Math.max(1, Y(z.lo) - Y(z.hi)));
-    if (z.label) { ctx.fillStyle = C.zoneEdge; ctx.fillText(z.label, x0 + 3, Y(z.hi) - 3); }
+    ctx.strokeStyle = z.edge ?? C.zoneEdge; ctx.strokeRect(x0, Y(z.hi), Math.max(2, x1 - x0), Math.max(1, Y(z.lo) - Y(z.hi)));
+    if (z.label) { ctx.fillStyle = z.edge ?? C.zoneEdge; ctx.fillText(z.label, x0 + 3, Y(z.hi) - 3); }
   }
   const bw = Math.max(1, pw / bars.length * 0.68);
   for (const b of bars) {
@@ -60,6 +77,7 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
   for (const m of marks) {
     if (m.t < t0) continue;
     ctx.fillStyle = m.color; ctx.beginPath(); ctx.arc(X(m.t), Y(m.price), font * 0.35, 0, Math.PI * 2); ctx.fill();
+    if (m.label) { ctx.textAlign = 'center'; ctx.fillText(m.label, X(m.t), Y(m.price) + (m.above ? -font * 0.6 : font * 1.2)); ctx.textAlign = 'left'; }
   }
   if (title) { ctx.fillStyle = '#e2e8f0'; ctx.font = `600 ${font}px Inter, system-ui, sans-serif`; ctx.fillText(title, x + 8, y + font * 1.25); }
   ctx.fillStyle = C.text; ctx.font = `${font * 0.8}px Inter, system-ui, sans-serif`;

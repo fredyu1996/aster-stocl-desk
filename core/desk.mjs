@@ -8,12 +8,30 @@ export const DEFAULT_CFG = {
   on: true, universe: 10, minVolume: 300_000, always: [], exclude: [],
   riskPct: 1, maxNotional: 1000, levCap: 10, maxOpen: 3,
   fee: 0.0004, slip: 0.0005, minNetRR: 2.0, maxSpreadPct: 0.15, timeExitMin: 90,
+  picks: 6, picksOnly: true,
 };
+
+// Screener picks: the shortlist posted on the north wall. The Trader only takes PMR proposals on these.
+// Order: symbols the account holds, Fred's pins, then furthest PMR stage, then 24h volume. Fred's skips are left out.
+export const STAGE = { QUALIFIED: 6, LTF_CONFIRMED: 5, POI_TOUCHED: 4, WAIT_RETEST: 3, WAIT_POI: 2, PATTERN_CONFIRMED: 1 };
+export function choosePicks(scan, { board = [], pins = [], skips = [], held = [], n = 6 } = {}) {
+  const vol = new Map(board.map((r, i) => [r.symbol, i]));
+  const why = s => held.includes(s.symbol) ? 'held' : pins.includes(s.symbol) ? 'pinned' : STAGE[s.status] ? 'setup' : 'volume';
+  const rank = { held: 3, pinned: 2, setup: 1, volume: 0 };
+  const rows = scan.filter(s => s?.symbol && (held.includes(s.symbol) || !skips.includes(s.symbol))).map(s => ({ s, why: why(s) }));
+  rows.sort((a, b) => rank[b.why] - rank[a.why] || (STAGE[b.s.status] ?? 0) - (STAGE[a.s.status] ?? 0) ||
+    (vol.get(a.s.symbol) ?? 1e9) - (vol.get(b.s.symbol) ?? 1e9));
+  return rows.filter((r, i) => i < n || r.why === 'held' || r.why === 'pinned')
+    .map(({ s, why }) => ({ symbol: s.symbol, why, status: s.status, reason: s.reason ?? null, price: s.price ?? s.last?.c ?? null }));
+}
+const heldSymbols = s => [...s.orders, ...s.positions].map(x => x.symbol);
+export const pickInput = s => ({ board: s.board, pins: s.pins, skips: s.skips, held: heldSymbols(s), n: s.cfg.picks });
 
 export function freshState() {
   return { v: 1, cfg: { ...DEFAULT_CFG }, acct: { start: START, balance: START, equity: START, peak: START, maxDD: 0 },
     seen: {}, orders: [], positions: [], trades: [], decisions: [], events: [], intel: [], reviews: {},
-    rules: { active: [], decided: {}, proposals: [] }, scan: [], board: [], cloud: null, lastCycle: null };
+    rules: { active: [], decided: {}, proposals: [] }, scan: [], board: [], cloud: null, lastCycle: null,
+    picks: [], pins: [], skips: [], marks: {} };
 }
 
 export function normalize(state) {
@@ -22,6 +40,8 @@ export function normalize(state) {
   s.cfg = Object.assign({ ...DEFAULT_CFG }, state?.cfg ?? {});
   s.acct = Object.assign(base.acct, state?.acct ?? {});
   s.rules = Object.assign({ active: [], decided: {}, proposals: [] }, state?.rules ?? {});
+  for (const k of ['picks', 'pins', 'skips']) if (!Array.isArray(s[k])) s[k] = [];
+  if (!s.marks || typeof s.marks !== 'object' || Array.isArray(s.marks)) s.marks = {};
   return s;
 }
 
@@ -122,6 +142,10 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
   for (const o of [...state.orders]) work(state, o, bars[o.symbol] ?? [], scanners[o.symbol], cfg, funding[o.symbol]);
   for (const p of [...state.positions]) manage(state, p, bars[p.symbol] ?? [], cfg, funding[p.symbol]);
 
+  state.board = universe.board.slice(0, 40);
+  state.picks = choosePicks(Object.values(scanners).map(sc => ({ ...sc.summary(), price: sc.last?.c })), pickInput(state));
+  const picked = new Set(state.picks.map(p => p.symbol));
+
   const lastClosed = Math.floor(now / MIN) * MIN;
   const proposals = Object.values(scanners).flatMap(sc => sc.proposals)
     .filter(p => !state.seen[p.id] && p.expiresAt > lastClosed && !(p.endedAt <= lastClosed)).sort((a, b) => a.signalAt - b.signalAt);
@@ -129,7 +153,7 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     state.seen[plan.id] = now;
     event(state, plan.signalAt, 'trader', 'PROPOSAL', `${plan.symbol} ${plan.direction === 1 ? 'long' : 'short'} @ ${plan.entry} · ${plan.pattern.type.replaceAll('_', ' ')} · ${plan.grade}`, plan.symbol);
     const openNotional = state.positions.reduce((s, p) => s + p.entry * p.qty, 0) + state.orders.reduce((s, o) => s + o.entry * o.qty, 0);
-    const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : preTrade(plan, {
+    const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : cfg.picksOnly && !picked.has(plan.symbol) ? { ok: false, reason: 'NOT_IN_PICKS' } : preTrade(plan, {
       cfg, equity: equityOf(state), openNotional, openCount: state.positions.length + state.orders.length,
       holding: [...state.positions, ...state.orders].some(x => x.symbol === plan.symbol),
       spec: universe.specs[plan.symbol], book: book[plan.symbol], funding: funding[plan.symbol], active: state.rules.active,
@@ -162,7 +186,6 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
   state.intel = intelItems.sort((a, b) => b.t - a.t).slice(0, 80);
   state.scan = Object.values(scanners).map(sc => ({ ...sc.summary(), price: sc.last?.c,
     h1: sc.history[60].slice(-48), m15: sc.history[15].slice(-64), m5: sc.history[5].slice(-72) }));
-  state.board = universe.board.slice(0, 40);
   for (const [id, t] of Object.entries(state.seen)) if (t < now - 7 * 24 * 60 * MIN) delete state.seen[id];
   state.decisions = state.decisions.slice(0, 200);
   state.lastCycle = { t: now, by, watch: universe.watch.length };

@@ -1,10 +1,11 @@
-import { loadMarket } from '../core/aster.mjs';
-import { cycle, freshState, normalize, persistable } from '../core/desk.mjs';
+import { isStock, loadMarket } from '../core/aster.mjs';
+import { choosePicks, cycle, freshState, normalize, persistable, pickInput } from '../core/desk.mjs';
 import { store, update } from '../core/github.mjs';
 import { Scanner } from '../core/pmr.mjs';
 import { features, learn, ruleKey, ruleLabel } from '../core/reviewer.mjs';
 import { C, ago, drawCandles, fmt, hhmm, money, pct, tradeOverlay } from './charts.mjs';
 import { DESKS, createWorld } from './scene.mjs';
+import { createChartWall } from './wall.mjs';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -25,27 +26,68 @@ const st = () => sync.token ? store({ token: sync.token, repo: sync.repo, branch
 
 const world = createWorld($('#scene'), {
   onPick(id, uv) {
+    if (id === 'board') { openWall(world.boardAt(uv)); return; }
     if (id === 'reviews') { const t = world.reviewAt(uv); open(t ? `review:${t}` : 'reviewer', 'reviews'); return; }
-    const to = { board: 'screener', positions: 'trader', rules: 'reviewer' }[id];
+    const to = { positions: 'trader', rules: 'reviewer' }[id];
     open(to ?? id, to ? id : undefined);
   },
 });
 
+// Picks wall (north wall, B): interactive charts of the Screener's picks. Fred's marks save to state.marks.
+let pendingMarks = {}, marksTimer = 0;
+const wall = createChartWall($('#chartwall'), {
+  state: () => state, scan: () => scanMap,
+  setMarks(sym, list) {
+    state.marks = { ...state.marks, [sym]: list };
+    pendingMarks[sym] = list;
+    clearTimeout(marksTimer); marksTimer = setTimeout(flushMarks, sync.token ? 1500 : 250);
+    world.update({ state, scanMap, source: status.source, ruleLabel });
+  },
+  togglePick(sym, kind) {
+    const [list, other] = kind === 'pin' ? ['pins', 'skips'] : ['skips', 'pins'];
+    mutate(s => {
+      s[list] = s[list].includes(sym) ? s[list].filter(x => x !== sym) : [...s[list], sym];
+      s[other] = s[other].filter(x => x !== sym);
+    }).then(() => { if (kind === 'pin') refresh(); });
+  },
+  addPin(sym) {
+    const info = cache.info?.symbols?.find(x => x.symbol === sym);
+    if (cache.info && !(info && isStock(info))) { status.note = `${sym} is not a trading Aster stock perp`; render(); return; }
+    if (state.pins.includes(sym)) return;
+    mutate(s => { s.pins = [...s.pins.filter(x => x !== sym), sym]; s.skips = s.skips.filter(x => x !== sym); }).then(refresh);
+  },
+  onClose() { render(); },
+});
+async function flushMarks() {
+  const batch = pendingMarks;
+  pendingMarks = {};
+  if (!Object.keys(batch).length) return;
+  await mutate(s => { Object.assign(s.marks, batch); });
+  Object.assign(state.marks, pendingMarks); // edits made while saving stay visible until the next flush
+}
+function openWall(sym) {
+  close();
+  world.goTo('board');
+  wall.show(sym);
+}
+
 function render() {
   const view = { state, scanMap, source: status.source, ruleLabel };
   world.update(view);
+  wall.update();
   const a = state.acct;
   $('#hud').innerHTML = `
     <b>Aster Stock Desk</b>
     <span>Equity <b>${money(a.equity)}</b> <i class="${a.equity >= a.start ? 'up' : 'down'}">${pct((a.equity / a.start - 1) * 100)}</i></span>
-    <span>Open ${state.positions.length} · Pending ${state.orders.length} · Trades ${state.trades.length}</span>
+    <span>Picks <b>${state.picks.length}</b> · Open ${state.positions.length} · Pending ${state.orders.length} · Trades ${state.trades.length}</span>
     <span>Feed <b class="${status.feed === 'Live' ? 'up' : 'warn'}">${esc(status.feed)}</b>${status.at ? ` · ${hhmm(status.at)}` : ''}</span>
     <span>${esc(status.source)}${state.lastCycle ? ` · last cycle ${esc(state.lastCycle.by)} ${ago(state.lastCycle.t)} ago` : ''}</span>
     ${status.note ? `<span class="warn">${esc(status.note)}</span>` : ''}`;
   if (panel) renderPanel();
 }
 
-function held(s) { return [...s.orders, ...s.positions].map(x => x.symbol); }
+// Symbols always scanned: what the account holds plus Fred's pinned picks.
+function held(s) { return [...s.orders, ...s.positions].map(x => x.symbol).concat(s.pins ?? []); }
 
 async function refresh() {
   if (busy) return;
@@ -82,6 +124,7 @@ async function refresh() {
     status.note = e.message;
   } finally {
     busy = false;
+    Object.assign(state.marks, pendingMarks);
     render();
   }
 }
@@ -89,7 +132,7 @@ async function refresh() {
 // Apply a change to the account (reviews, rules, settings): local storage, or read → change → write on the data repo.
 async function mutate(fn) {
   const store_ = st();
-  const apply = s => { const n = normalize(s); fn(n); n.rules.proposals = learn(n.trades, n.reviews, { ...n.rules.decided, ...Object.fromEntries(n.rules.active.map(r => [ruleKey(r), 'active'])) }); return n; };
+  const apply = s => { const n = normalize(s); fn(n); n.picks = choosePicks(n.scan, pickInput(n)); n.rules.proposals = learn(n.trades, n.reviews, { ...n.rules.decided, ...Object.fromEntries(n.rules.active.map(r => [ruleKey(r), 'active'])) }); return n; };
   try {
     if (store_) state = normalize((await update(store_, s => persistable(apply(s)))).state);
     else { state = apply(state); LS.set('asd_state', persistable(state)); }
@@ -107,7 +150,7 @@ function open(id, spot) {
 }
 function close() { panel = null; $('#panel').hidden = true; }
 
-const tabs = [['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['settings', '⚙ Settings']];
+const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['settings', '⚙ Settings']];
 function renderPanel() {
   if (document.activeElement?.closest('#panel input, #panel textarea, #panel select')) return;
   const [kind, arg] = panel.split(/:(.*)/s);
@@ -122,12 +165,14 @@ function table(head, rows) {
 }
 
 function screener() {
+  const pk = new Map(state.picks.map(p => [p.symbol, p]));
   const rows = Object.values(scanMap).map(s => `<tr data-open="chart:${s.symbol}" class="click">
-    <td><b>${s.symbol.replace('USDT', '')}</b></td><td>${fmt(s.price)}</td><td style="color:${s.status === 'QUALIFIED' ? '#fbbf24' : ''}">${s.status.replaceAll('_', ' ')}</td>
+    <td><b>${s.symbol.replace('USDT', '')}</b></td><td>${pk.has(s.symbol) ? (pk.get(s.symbol).why === 'pinned' ? '★ pick' : 'pick') : state.skips.includes(s.symbol) ? '<span class="muted">skipped</span>' : ''}</td><td>${fmt(s.price)}</td><td style="color:${s.status === 'QUALIFIED' ? '#fbbf24' : ''}">${s.status.replaceAll('_', ' ')}</td>
     <td class="muted">${esc(s.reason ?? '')}</td><td>${s.anchor ? `${s.anchor.type.replaceAll('_', ' ')} ${s.anchor.direction === 1 ? '↑' : '↓'} ${hhmm(s.anchor.t)}` : ''}</td></tr>`);
   return `<h2>Screener · GMS PMR v1.4</h2>
     <p class="muted">Completed 1H breakout from a known pattern → fresh causal 15m OB/FVG → first retest within 120 min → 5m MSS + displacement within 45 min → FVG midpoint entry (60 min window). Click a row for its 1H / 15m / 5m charts.</p>
-    ${table(['Symbol', 'Last', 'State', 'Reason', '1H pattern'], rows)}`;
+    <p>The top ${state.cfg.picks} (held, your pins, then furthest PMR stage, then volume) go on the north wall as picks.${state.cfg.picksOnly ? ' The Trader only takes proposals on picks.' : ''} <button data-open="wall">Open picks wall (B)</button></p>
+    ${table(['Symbol', 'Pick', 'Last', 'State', 'Reason', '1H pattern'], rows)}`;
 }
 
 function chart(sym) {
@@ -235,10 +280,11 @@ function settings() {
   return `<h2>Settings</h2>
     <div class="grid">${num('universe', 'Symbols watched (top by volume)', 1)}${num('minVolume', 'Min 24h volume (USDT)', 1000)}
     ${num('riskPct', 'Risk per trade (% equity)')}${num('maxNotional', 'Max notional per trade (USDT)')}${num('levCap', 'Total leverage cap (×)')}
-    ${num('maxOpen', 'Max open + pending', 1)}${num('minNetRR', 'Min net R:R')}${num('maxSpreadPct', 'Max spread %')}
+    ${num('maxOpen', 'Max open + pending', 1)}${num('picks', 'Picks on the north wall', 1)}${num('minNetRR', 'Min net R:R')}${num('maxSpreadPct', 'Max spread %')}
     ${num('fee', 'Taker fee per side (0.0004 = 0.04%)')}${num('slip', 'Exit slippage (0.0005 = 0.05%)')}${num('timeExitMin', 'Time exit (min)', 1)}
     <label>Always watch (comma list)<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>Exclude (comma list)<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
+    <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> Trader only takes proposals on the picks wall</label></p>
     <h3>Shared account (GitHub sync)</h3>
     <p class="muted">With a token, this browser shows the cloud trader's account and saves your reviews there. The token stays in this browser only (localStorage). Use a fine-grained token with Contents read/write on the private data repo only. Never paste it into chat.</p>
     <form id="syncform" class="grid"><label>Data repo<input name="repo" value="${esc(sync.repo)}"></label>
@@ -252,6 +298,7 @@ function settings() {
 $('#panel').addEventListener('click', e => {
   const el = e.target.closest('[data-open],[data-close],[data-rule],[data-reset],[data-unsync]');
   if (!el) return;
+  if (el.dataset.open === 'wall') return openWall();
   if (el.dataset.open) return open(el.dataset.open);
   if (el.hasAttribute('data-close')) return close();
   if (el.hasAttribute('data-reset')) { if (confirm('Reset the local paper account?')) { state = freshState(); LS.set('asd_state', state); render(); } return; }
@@ -282,12 +329,13 @@ $('#panel').addEventListener('submit', e => {
   mutate(s => { s.reviews[id] = rv; });
 });
 addEventListener('keydown', e => {
+  if (wall.isOpen()) return wall.key(e);
   if (e.target.closest('input,textarea,select')) return;
   const d = DESKS.find(x => x.key === e.key);
   if (d) return open(d.id);
   const k = e.key.toLowerCase();
   if (k === 'v') return open('reviewer', 'reviews');
-  if (k === 'b') return world.goTo('board');
+  if (k === 'b') return openWall();
   if (k === 'p') return world.goTo('positions');
   if (k === 'r') return world.goTo('rules');
   if (k === 's' && e.altKey) return open('settings');
@@ -298,7 +346,9 @@ $('#help').hidden = LS.get('asd_help_seen', false);
 $('#help').addEventListener('click', () => { $('#help').hidden = true; LS.set('asd_help_seen', true); });
 $('#settingsBtn').addEventListener('click', () => open('settings'));
 
-globalThis.__desk = { world, get state() { return state; } };
+addEventListener('pagehide', () => { flushMarks(); });
+
+globalThis.__desk = { world, wall, get state() { return state; } };
 render();
 refresh();
 setInterval(refresh, 60_000);

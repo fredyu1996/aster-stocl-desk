@@ -14,7 +14,7 @@
 | 行路 | W A S D／方向鍵，Shift 跑，滾輪向前 |
 | 望 | 拖動滑鼠 |
 | 4 個 desk | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel |
-| 牆 | B 北牆 movers board · P 東牆持倉 · V 南牆 review wall · R 西牆規則同 agent comms |
+| 牆 | B 北牆 picks wall · P 東牆持倉 · V 南牆 review wall · R 西牆規則同 agent comms |
 | 設定 | 右上 ⚙ |
 
 ## 4 個 agent
@@ -22,9 +22,26 @@
 | Agent | 工作 |
 | --- | --- |
 | Screener | 揀 24h 成交額最高嘅 10 隻股票永續（最少 300K USDT，`pre-launch` 除外，持倉中嘅一定保留）。等完整 1H 收線確認形態突破 → 新鮮、同突破有因果關係嘅 15m OB/FVG → 120 分鐘內首次回踩 → 45 分鐘內 5m MSS + displacement → FVG 中位入場（60 分鐘窗口）。 |
-| Trader | 收到批准就喺 FVG 中位掛 paper limit。只會用掛單之後先開始嘅 1m bar 成交。同一支 bar 同時掂止蝕同止賺先計止蝕。90 分鐘時間出場。 |
+| Trader | 只接北牆 picks 入面嘅 proposal（⚙ 可以關）。收到批准就喺 FVG 中位掛 paper limit。只會用掛單之後先開始嘅 1m bar 成交。同一支 bar 同時掂止蝕同止賺先計止蝕。90 分鐘時間出場。 |
 | Reviewer | 每個 proposal 核對：扣 taker fee、出場滑價同持倉期內 funding 之後 net R:R ≥ 2.0、spread、交易所最少數量／名義金額、持倉上限，同你批准咗嘅規則。平倉後評 A–F，列出 ✓/✗。 |
 | Market Intel | Aster taker buy／sell 失衡同 5m 成交額異動（≥ 前 20 支 bar 平均 2.5 倍）。未有新聞來源。 |
+
+## Picks wall（北牆，B）
+
+Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅 → 你 pin 咗嘅 → PMR 行得最前嘅（QUALIFIED > LTF confirmed > POI touched > wait retest > wait POI > pattern confirmed）→ 24h 成交額。你 skip 咗嘅唔會上牆，除非仲有持倉。**Trader 只會接 picks 入面嘅 PMR proposal**，其他股出 proposal 會記做 `NOT_IN_PICKS`。
+
+撳北牆（或者按 B）打開全螢幕 chart wall：
+
+| 操作 | 方法 |
+| --- | --- |
+| 縮放／平移 | 滾輪縮放，拖動平移，Shift + 滾輪左右移，雙擊重設，＋／－ |
+| 時框 | 每個圖 1m · 5m · 15m · 1h · 4h · 1d。拖到最左會自動載入更早嘅 K 線（最多 4,000 支） |
+| 標記 | V 游標 · F FVG · O OB · M MSS · L Liquidity（BSL／SSL）· 1 HH · 2 HL · 3 LH · 4 LL · E 擦除 · B 轉 Bull／Bear · Ctrl+Z 復原 |
+| 自動標 | A：喺揀咗嘅圖嘅可見範圍標 FVG 同 swing（淡色），再按一次清走 |
+| PMR 層 | G：顯示／收埋 PMR 1H 突破線、目標、15m POI，同 Trader 嘅 limit／entry／SL／TP |
+| 揀股 | 每個圖 ★ Pin／Skip；右邊可以 pin 其他掃描中或者打代號加 |
+
+標記存喺 `state.marks`（有 sync 就寫返 data repo，所以 cloud 同其他瀏覽器都見到），北牆嘅縮圖都會畫出嚟。**標記只係你嘅筆記，唔會影響 Trader 落單。** Chart wall 嘅 K 線係直接攞 Aster klines，只用嚟睇；最後一支未收嘅 K 線會淡色顯示。Scanner 同 paper 成交照舊只用已完成嘅 1m bar。
 
 ## Reviewer 點樣學
 

@@ -1,7 +1,7 @@
-// Walkable 3D room: four agent desks, the movers board (north), positions wall (east),
+// Walkable 3D room: four agent desks, the Screener picks wall (north), positions wall (east),
 // review wall (south) and the Reviewer's rules + agent comms wall (west).
 import * as THREE from 'three';
-import { C, drawCandles, drawLine, fmt, hhmm, money, pct, tradeOverlay } from './charts.mjs';
+import { C, drawCandles, drawLine, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
 
 export const DESKS = [
   { id: 'screener', key: '1', name: 'Screener', role: '1H pattern → 15m POI → 5m entry', color: 0x38bdf8, x: -6, z: -4 },
@@ -28,8 +28,6 @@ function clip(ctx, s, max) {
   while (s.length > 1 && ctx.measureText(`${s}…`).width > max) s = s.slice(0, -1);
   return `${s}…`;
 }
-const statusColor = s => ({ QUALIFIED: '#fbbf24', LTF_CONFIRMED: '#f97316', POI_TOUCHED: '#fb923c', WAIT_RETEST: '#38bdf8', WAIT_POI: '#38bdf8',
-  PATTERN_CONFIRMED: '#38bdf8', SKIPPED: '#64748b', EXPIRED: '#64748b', CANCELLED: '#64748b' })[s] ?? '#475569';
 
 export function createWorld(canvas, { onPick }) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -124,7 +122,7 @@ export function createWorld(canvas, { onPick }) {
   // Walking: WASD / arrows, drag to look, wheel to step.
   const keys = new Set();
   let yaw = 0, pitch = -0.05, drag = null, moved = 0;
-  addEventListener('keydown', e => { if (!e.target.closest('input,textarea,select')) keys.add(e.code); });
+  addEventListener('keydown', e => { if (!e.target.closest('input,textarea,select') && !document.body.classList.contains('wall-open')) keys.add(e.code); });
   addEventListener('keyup', e => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
   canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; moved = 0; canvas.setPointerCapture(e.pointerId); });
@@ -152,7 +150,7 @@ export function createWorld(canvas, { onPick }) {
   // Fly to a spot in front of something.
   let flight = null;
   function goTo(x, z, faceYaw) { flight = { x, z, yaw: faceYaw, t: 0, from: { x: camera.position.x, z: camera.position.z, yaw } }; }
-  const SPOTS = { board: [0, -2.5, 0], positions: [3.5, -0.5, -Math.PI / 2], reviews: [0, 1.5, Math.PI], rules: [-3.5, -0.5, Math.PI / 2],
+  const SPOTS = { board: [0, -1.6, 0], positions: [3.5, -0.5, -Math.PI / 2], reviews: [0, 1.5, Math.PI], rules: [-3.5, -0.5, Math.PI / 2],
     ...Object.fromEntries(DESKS.map(d => [d.id, [d.x + 0.9, d.z + 4.4, 0]])) };
 
   let last = performance.now();
@@ -179,24 +177,35 @@ export function createWorld(canvas, { onPick }) {
   });
 
   // ---- wall and monitor drawing ----
+  // North wall: the Screener's picks as 15m charts with PMR levels and Fred's marks. Click a chart to open the Picks wall.
+  const PICK_COLS = 3, PICK_TOP = 112;
   function drawBoard(view) {
-    const { ctx, w, h } = BOARD, s = view.state;
+    const { ctx, w, h } = BOARD, s = view.state, picks = (s.picks ?? []).slice(0, 6);
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
-    header(ctx, w, `ASTER STOCK PERPS · top by 24h volume · ${view.source}`, '#4f7cff', 52);
-    const rows = (s.board ?? []).slice(0, 20), cols = 2, per = 10, rh = (h - 130) / per, cw = w / cols;
-    ctx.font = `600 30px ${FONT}`; ctx.fillStyle = '#64748b';
-    for (let c = 0; c < cols; c++) ['SYMBOL', 'LAST', '24H', 'VOL', 'SETUP'].forEach((t, i) => ctx.fillText(t, c * cw + [40, 360, 640, 860, 1080][i], 140));
-    rows.forEach((r, i) => {
-      const c = Math.floor(i / per), y = 150 + (i % per + 0.8) * rh * 0.93, x = c * cw;
-      const scan = view.scanMap[r.symbol];
-      if (i % 2) { ctx.fillStyle = 'rgba(255,255,255,.025)'; ctx.fillRect(x, y - rh * 0.62, cw, rh * 0.93); }
-      ctx.font = `700 46px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText(r.symbol.replace('USDT', ''), x + 40, y);
-      ctx.font = `500 42px ${FONT}`; ctx.fillStyle = '#cbd5e1'; ctx.fillText(fmt(r.last), x + 360, y);
-      ctx.fillStyle = r.change >= 0 ? C.up : C.down; ctx.fillText(pct(r.change), x + 640, y);
-      ctx.fillStyle = '#94a3b8'; ctx.fillText(`${(r.quoteVolume / 1e6).toFixed(1)}M`, x + 860, y);
-      if (scan) { ctx.fillStyle = statusColor(scan.status); ctx.font = `600 34px ${FONT}`; ctx.fillText(clip(ctx, scan.status.replaceAll('_', ' '), 480), x + 1080, y); }
+    header(ctx, w, `SCREENER PICKS · the Trader only trades these · ${picks.length} on the wall · click a chart to mark it up`, '#4f7cff', 50);
+    const rows = Math.max(1, Math.ceil(picks.length / PICK_COLS)), cw = w / PICK_COLS, ch = (h - PICK_TOP) / Math.max(2, rows);
+    picks.forEach((p, i) => {
+      const x = (i % PICK_COLS) * cw + 12, y = PICK_TOP + Math.floor(i / PICK_COLS) * ch + 6, bw = cw - 24, bh = ch - 12;
+      const scan = view.scanMap[p.symbol], bars = scan?.m15 ?? [], live = [...s.positions, ...s.orders].find(o => o.symbol === p.symbol);
+      const ov = { lines: [], zones: [], marks: [] };
+      if (scan?.anchor) ov.lines.push({ price: scan.anchor.boundary, color: C.boundary, label: 'BRK' });
+      if (scan?.poi) ov.zones.push({ lo: scan.poi.lo, hi: scan.poi.hi, from: scan.poi.knownAt, label: `15m ${scan.poi.type}` });
+      if (live) { const t = tradeOverlay(live); ov.lines.push(...t.lines.slice(0, 3)); }
+      if (bars.length) {
+        const lo = Math.min(...bars.map(b => b.l)), hi = Math.max(...bars.map(b => b.h)), pad = (hi - lo) * 0.5;
+        const near = (s.marks?.[p.symbol] ?? []).filter(m => [m.p1, m.p2].filter(Number.isFinite).every(v => v >= lo - pad && v <= hi + pad));
+        const mo = marksOverlay(near.slice(-14));
+        ov.lines.push(...mo.lines); ov.zones.push(...mo.zones); ov.marks.push(...mo.marks);
+      }
+      const tag = live ? (live.entryAt ? ' · OPEN' : ' · LIMIT') : p.why === 'pinned' ? ' · ★' : '';
+      drawCandles(ctx, { x, y, w: bw, h: bh }, bars, { ...ov, font: 30, title: `${p.symbol.replace('USDT', '')} ${fmt(p.price)}${tag}` });
+      ctx.font = `600 28px ${FONT}`; ctx.fillStyle = statusColor(p.status); ctx.textAlign = 'right';
+      ctx.fillText(clip(ctx, p.status.replaceAll('_', ' '), bw * 0.45), x + bw - 160, y + 38); ctx.textAlign = 'left';
     });
+    if (!picks.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Waiting for the first scan. Picks appear here.', 60, h / 2); }
     BOARD.t.needsUpdate = true;
+    BOARD.ids = picks.map(p => p.symbol);
+    BOARD.rows = Math.max(2, rows);
   }
 
   function drawPositions(view) {
@@ -295,6 +304,10 @@ export function createWorld(canvas, { onPick }) {
   return {
     camera,
     goTo: (id, panel) => { const sp = SPOTS[id]; if (sp) goTo(sp[0], sp[1], sp[2] - (panel && innerWidth > 900 ? 0.3 : 0)); },
+    boardAt: uv => {
+      const cy = (1 - uv.y) * BOARD.h, col = Math.min(PICK_COLS - 1, Math.floor(uv.x * PICK_COLS)), rowI = Math.floor((cy - PICK_TOP) / ((BOARD.h - PICK_TOP) / (BOARD.rows ?? 2)));
+      return rowI < 0 ? null : BOARD.ids?.[rowI * PICK_COLS + col] ?? null;
+    },
     reviewAt: uv => {
       const cy = (1 - uv.y) * REVIEW.h, col = Math.min(3, Math.floor(uv.x * 4)), rowI = Math.floor((cy - 110) / ((REVIEW.h - 110) / 2));
       return rowI < 0 || rowI > 1 ? null : REVIEW.ids?.[rowI * 4 + col] ?? null;
