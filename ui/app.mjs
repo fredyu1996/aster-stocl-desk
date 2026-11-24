@@ -217,7 +217,7 @@ function trader() {
 
 function bucketStats() {
   const out = [];
-  for (const field of ['pattern', 'side', 'poi', 'grade', 'session']) {
+  for (const field of ['pattern', 'side', 'poi', 'grade', 'session', 'marks']) {
     const groups = {};
     for (const t of state.trades) (groups[features(t.plan)[field]] ??= []).push(t.r);
     for (const [v, rs] of Object.entries(groups)) out.push(`<tr><td>${field}</td><td>${esc(v)}</td><td>${rs.length}</td><td>${(rs.reduce((a, b) => a + b, 0) / rs.length).toFixed(2)}R</td><td>${rs.reduce((a, b) => a + b, 0).toFixed(1)}R</td></tr>`);
@@ -232,7 +232,7 @@ function reviewer() {
   const dec = (state.decisions ?? []).slice(0, 30).map(d => `<tr><td>${hhmm(d.t)}</td><td>${d.symbol}</td><td class="${d.status === 'Approved' ? 'up' : d.status === 'Declined' ? 'warn' : ''}">${d.status}</td>
     <td>${esc(d.reason)}</td><td>${Number.isFinite(d.netRR) ? d.netRR.toFixed(2) : ''}</td><td>${d.plan.grade}</td></tr>`);
   return `<h2>Reviewer</h2>
-    <p class="muted">Checks every proposal: net R:R ≥ ${state.cfg.minNetRR} after taker fees (${state.cfg.fee * 100}%/side), exit slippage (${state.cfg.slip * 100}%) and funding due inside the hold, spread ≤ ${state.cfg.maxSpreadPct}%, exchange size filters, position limits, and the rules you approved. After each close it grades the trade A–F. It proposes a rule only when a bucket loses in <i>both</i> halves of its trades (n ≥ 8, ≤ −3R total) or when three of your reviews say the same thing. Nothing changes until you approve.</p>
+    <p class="muted">Checks every proposal: net R:R ≥ ${state.cfg.minNetRR} after taker fees (${state.cfg.fee * 100}%/side), exit slippage (${state.cfg.slip * 100}%) and funding due inside the hold, spread ≤ ${state.cfg.maxSpreadPct}%, exchange size filters, position limits, your hand-drawn chart marks (declines a proposal against your latest MSS or with its entry inside your opposite FVG / OB), and the rules you approved. After each close it grades the trade A–F. It proposes a rule only when a bucket loses in <i>both</i> halves of its trades (n ≥ 8, ≤ −3R total) or when three of your reviews say the same thing. Nothing changes until you approve.</p>
     <h3>Active rules</h3><ul class="rules">${active || '<li class="muted">None. Base checks only.</li>'}</ul>
     <h3>Proposals</h3><ul class="rules">${props || '<li class="muted">No proposal: not enough evidence yet.</li>'}</ul>
     <h3>Decisions</h3>${table(['Time', 'Symbol', 'Decision', 'Reason', 'Net R:R', 'Setup'], dec)}
@@ -259,7 +259,7 @@ function review(id) {
   CHARTS = { [`trade:${id}`]: [bars, tradeOverlay(t)] };
   const chip = (group, [k, label]) => `<label class="chip"><input type="checkbox" name="${group}" value="${k}" ${rv[group]?.includes(k) ? 'checked' : ''}>${label}</label>`;
   return `<h2>${t.symbol} ${t.direction === 1 ? 'long' : 'short'} · ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R · grade ${t.grade?.letter}</h2>
-    <p class="muted">${t.plan.pattern.type.replaceAll('_', ' ')} · 15m ${t.plan.poi.type} · ${t.plan.grade} · entry ${fmt(t.entry)} ${hhmm(t.entryAt)} → ${t.reason} ${fmt(t.exit)} ${hhmm(t.exitAt)} · net R:R at entry ${t.netRR.toFixed(2)} · fees ${money(t.fees)}</p>
+    <p class="muted">${t.plan.pattern.type.replaceAll('_', ' ')} · 15m ${t.plan.poi.type} · ${t.plan.grade} · entry ${fmt(t.entry)} ${hhmm(t.entryAt)} → ${t.reason} ${fmt(t.exit)} ${hhmm(t.exitAt)} · net R:R at entry ${t.netRR.toFixed(2)} · fees ${money(t.fees)}${t.plan.marks ? ` · your marks: ${t.plan.marks.confluence ? 'same-direction zone hit ✓' : 'no zone hit'}${t.plan.marks.mss ? `, latest MSS ${t.plan.marks.mss}` : ''}` : ''}</p>
     <canvas data-chart="trade:${id}" data-title="${t.symbol} 5m"></canvas>
     <ul class="items">${t.grade.items.map(i => `<li class="${i.ok ? 'up' : 'down'}">${i.ok ? '✓' : '✗'} ${esc(i.text)}</li>`).join('')}</ul>
     <form id="rvform" data-id="${esc(id)}">

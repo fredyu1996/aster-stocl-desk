@@ -43,7 +43,7 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 4. The cloud and a browser never both trade: whoever ran last (`lastCycle.by`) keeps the desk for 30 min. Every save re-reads the ref first.
 5. Learned rules only gate trades after Fred approves them (`rules.active`). Rejected / removed keys stay in `rules.decided` so they are not proposed again.
 6. Picks: `state.picks` = held symbols, then Fred's `pins`, then furthest PMR stage, then 24h volume, minus his `skips` (a held symbol stays). Size `cfg.picks` (6). With `cfg.picksOnly` (default on) a proposal outside the picks is declined `NOT_IN_PICKS`. Pins are always scanned (passed with held symbols to `loadMarket`).
-7. Fred's chart marks (`state.marks[symbol]`, FVG / OB / MSS / liquidity / HH HL LH LL, times are chart-bar open times) are notes only. They never gate or size a trade. Chart-wall candles (`chartBars`) are display only; trading stays on completed 1m bars.
+7. Fred's chart marks (`state.marks[symbol]`, FVG / OB / MSS / liquidity / HH HL LH LL, times are chart-bar open times). Fred chose (2026-11-23) "veto + record": `markCheck` declines a proposal when his latest hand-drawn MSS (by bar time, at or before the signal) points the other way, or the entry sits inside one of his opposite-direction FVG / OB; a same-direction FVG / OB overlapping the 15m POI or 5m entry FVG is recorded as `plan.marks.confluence` (feature `marks`, rule `marksConfluenceOnly` only after his approval). Auto marks and marks placed after the signal bar never count. Marks never size a trade. Order of checks: trading off → not in picks → marks veto → `preTrade`. Chart-wall candles (`chartBars`) are display only; trading stays on completed 1m bars.
 
 ## Open items
 
@@ -51,4 +51,5 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 - Needs a public GitHub repo for Pages + Actions, the `DATA_TOKEN` secret, and a cron-job.org timer. Data goes to `fredyu1996/aster-desk-data` branch `stocks-state` unless `DATA_REPO` / `DATA_BRANCH` say otherwise.
 - No live executor yet (Fred chose "paper first, keep live"). Market Floor's `binance-execution.mjs` is the reference if he asks for one; Aster's v1 futures API is Binance-style HMAC.
 - No backtester panel and no news feed yet.
-- Picks wall (added 2026-11-23): ask Fred whether his marks should ever feed the Trader (for example only take a proposal whose POI overlaps his FVG / OB). Today they are notes only. Manual paper orders from the wall are also not built.
+- Marks veto has no expiry: an old opposite FVG / OB keeps vetoing until Fred erases it. Ask before adding mitigation / age rules.
+- Manual paper orders from the Picks wall are not built.

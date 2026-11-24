@@ -1,7 +1,9 @@
 // Picks wall: the Screener's shortlist as interactive charts (zoom, pan, timeframes, older history on demand)
-// where Fred marks FVG / OB / MSS / HH HL LH LL / liquidity. Marks are notes saved to state.marks; they never gate trades.
+// where Fred marks FVG / OB / MSS / HH HL LH LL / liquidity. Marks save to state.marks. His hand-drawn MSS and FVG / OB
+// marks veto proposals against them (core/reviewer.mjs markCheck); auto marks never count.
 // Chart candles come from Aster klines for display only. The scanner and paper fills keep using completed 1m bars.
 import { chartBars } from '../core/aster.mjs';
+import { latestMss } from '../core/reviewer.mjs';
 import { C, fmt, pct, statusColor } from './charts.mjs';
 
 const TFS = ['1m', '5m', '15m', '1h', '4h', '1d'];
@@ -10,8 +12,9 @@ const TOOLS = [['cursor', 'Cursor', 'V'], ['fvg', 'FVG', 'F'], ['ob', 'OB', 'O']
   ['HH', 'HH', '1'], ['HL', 'HL', '2'], ['LH', 'LH', '3'], ['LL', 'LL', '4'], ['erase', 'Erase', 'E']];
 const HINT = {
   cursor: '拖動平移 · 滾輪縮放 · Shift + 滾輪左右移 · 雙擊重設 · 拖到最左會自動載入更早嘅 K 線',
-  fvg: 'FVG：喺圖上拖一個框，會吸附 K 線嘅開收高低。Bull / Bear 用 B 轉。', ob: 'OB：拖一個框標 order block。',
-  mss: 'MSS：由轉勢位拖一條橫線。', liq: 'Liquidity：撳一下。高過現價係 BSL，低過係 SSL。',
+  fvg: 'FVG：拖一個框，會吸附 K 線開收高低。B 轉 Bull / Bear。入場價落喺你反方向嘅 FVG/OB 入面，Trader 唔會做。',
+  ob: 'OB：拖一個框標 order block。同方向撞到 PMR 個 POI 會記低做 confluence。',
+  mss: 'MSS：由轉勢位拖一條橫線。你最新嗰條 MSS 決定 Trader 做邊個方向（Bull 只做 long，Bear 只做 short）。', liq: 'Liquidity：撳一下。高過現價係 BSL，低過係 SSL。',
   HH: 'HH：撳一支 K 線，標喺最高位。', HL: 'HL：撳一支 K 線，標喺最低位。', LH: 'LH：撳一支 K 線，標喺最高位。', LL: 'LL：撳一支 K 線，標喺最低位。',
   erase: 'Erase：撳一個你嘅標記刪走佢。Ctrl+Z 復原。',
 };
@@ -437,6 +440,8 @@ export function createChartWall(root, api) {
     const d = (st.decisions ?? []).find(x => x.symbol === sym && Date.now() - x.t < 6 * 36e5);
     if (d) return [`Reviewer ${d.status === 'Approved' ? '批准' : d.status === 'Declined' ? '拒絕' : d.status}：${String(d.reason).replaceAll('_', ' ')}`, d.status === 'Approved' ? 'up' : 'warn'];
     if (s?.status === 'QUALIFIED') return ['PMR 出咗 proposal，交 Reviewer 核', 'warn'];
+    const mss = latestMss(marksOf(sym));
+    if (mss) return [`等 PMR setup · 你最新 ${mss.dir === 'bull' ? 'Bull' : 'Bear'} MSS → Trader 只做 ${mss.dir === 'bull' ? 'long' : 'short'}`, mss.dir === 'bull' ? 'up' : 'down'];
     return ['等 PMR setup 完成先會落單', 'muted'];
   }
   function tileHTML(sym) {
@@ -474,7 +479,7 @@ export function createChartWall(root, api) {
       const sb = el.querySelector('[data-skip]'); sb.classList.toggle('on', skip); sb.setAttribute('aria-pressed', skip);
     }
     const st2 = api.state();
-    $('[data-sub]').textContent = `Screener 心水 ${picks().length} 隻 · ${st2.cfg.picksOnly ? 'Trader 只會喺呢度揀單' : 'Picks-only 已關：Trader 會做所有 watch 嘅股'} · 標記只係筆記，唔會影響落單`;
+    $('[data-sub]').textContent = `Screener 心水 ${picks().length} 隻 · ${st2.cfg.picksOnly ? 'Trader 只會喺呢度揀單' : 'Picks-only 已關：Trader 會做所有 watch 嘅股'} · 你手畫嘅 MSS 同 FVG/OB 會令 Trader 拒絕對頭嘅單（自動標記唔計）`;
   }
   function renderRail() {
     if (document.activeElement?.closest('.cw-rail input')) return;
