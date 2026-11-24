@@ -60,7 +60,7 @@ export function report(rows, split) {
   rows = [...rows].sort((a, b) => a.t0 - b.t0);
   return { all: stats(rows), halves: [stats(rows.filter(x => x.t0 < split)), stats(rows.filter(x => x.t0 >= split))],
     bySymbol: group(rows, x => x.s), bySide: group(rows, x => x.side), months: group(rows, x => new Date(x.t0).toISOString().slice(0, 7)),
-    exits: group(rows, x => String(x.why).replace(/\(.*?\)|[\d.]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 40)),
+    exits: group(rows, x => String(x.why).replace(/\(.*?\)|\b\d+\.\d+\b|\b\d{3,}\b/g, '').replace(/\s+/g, ' ').replace(/ ([,:])/g, '$1').trim().slice(0, 48)),
     trades: rows.slice(-300) };
 }
 
