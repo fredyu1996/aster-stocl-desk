@@ -360,7 +360,7 @@ function btBlock(name, x) {
   const h = ['Value', 'n', 'Win', 'Avg R', 'Total R', 'Max DD'];
   const last = x.trades.slice(-15).reverse().map(t => `<tr><td>${new Date(t.t0).toLocaleDateString('en-CA')}</td><td>${esc(t.s.replace('USDT', ''))}</td><td>${t.side}</td><td>${esc(t.pattern ?? `${t.tf ?? ''} ${t.zone ?? ''}`)}</td><td class="muted">${esc(t.why)}</td><td class="${t.R >= 0 ? 'up' : 'down'}">${t.R >= 0 ? '+' : ''}${t.R}R</td></tr>`);
   return `<h3>${name}</h3>
-    <div class="stats"><div><small>Trades</small><b>${x.all.n}</b></div><div><small>Win rate</small><b>${x.all.win ?? '—'}%</b></div><div><small>Avg R</small><b>${x.all.avgR ?? '—'}</b></div>
+    <div class="stats"><div><small>Trades</small><b>${x.all.n}</b></div><div><small>Win rate</small><b>${x.all.win == null ? '—' : `${x.all.win}%`}</b></div><div><small>Avg R</small><b>${x.all.avgR ?? '—'}</b></div>
       <div><small>Total R</small><b class="${x.all.totR >= 0 ? 'up' : 'down'}">${x.all.totR}R</b></div><div><small>Max drawdown</small><b>${x.all.maxDD}R</b></div><div><small>Profit factor (R)</small><b>${x.all.pf ?? '—'}</b></div></div>
     <p>First half: ${sR(x.halves[0])}<br>Second half: ${sR(x.halves[1])}${x.all.n < 30 ? `<br><span class="warn">${x.all.n} trades: too few to judge the strategy.</span>` : ''}</p>
     ${x.declined ? `<p class="muted">${x.proposals} PMR proposals · not taken: ${esc(Object.entries(x.declined).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(' · ') || 'none')}</p>` : ''}
@@ -375,7 +375,7 @@ function backtestPanel() {
   return `<h2>Backtest · ${d.days} days · ${d.symbols.length} stock perps</h2>
     <p class="muted">${new Date(d.from).toLocaleDateString('en-CA')} → ${new Date(d.to).toLocaleDateString('en-CA')} · run ${new Date(d.t).toLocaleString('en-CA')} · ${esc(d.symbols.map(s => s.replace('USDT', '')).join(', '))}.
       Report only: it never changes either trader. ${esc(d.notes.slice(1).join(' '))}</p>
-    ${btBlock('PMR Trader (GMS PMR v1.4)', d.pmr)}${btBlock(`SMC Trader (${esc(d.smc.source?.account ?? 'crypto desk SMC')})`, d.smc)}`;
+    ${btBlock('PMR Trader (GMS PMR v1.4)', d.pmr)}${btBlock('SMC Trader (crypto-desk code, small-cap settings)', d.smc)}`;
 }
 
 const A_CHIPS = [['same', 'Same trade'], ['skip', 'Skip it'], ['flip', 'Other side'], ['later', 'Enter later / deeper'], ['earlier', 'Enter earlier'],

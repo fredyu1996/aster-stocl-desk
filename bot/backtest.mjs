@@ -100,7 +100,7 @@ export async function smcRun(data, { from, to, exInfo, src }) {
     const r = runStep(h, D, T, { coins });
     for (const x of r.closed) { const t = smcTrade(x); rows.push({ s: t.symbol, side: x.side, t0: x.t0, t1: x.t1, R: r3(x.R), pnl: r3(x.pnl), why: x.exitWhy,
       entry: x.entry, exit: x.exit, stop: x.stop0, target: x.target, tf: x.tf, zone: x.zoneKind, type: x.type ?? 'rev', q: x.q?.score ?? null, maxR: r3(x.maxR ?? 0) }); }
-    for (const c of r.scan?.cands ?? []) if (!c.took && c.skip) { const k = c.skip.replace(/[\d.]+/g, '#').split(':')[0].slice(0, 60); skips[k] = (skips[k] ?? 0) + 1; }
+    for (const c of r.scan?.cands ?? []) if (!c.took && c.skip) { const k = c.skip.replace(/\b\d+(\.\d+)?(?![\dmh])/g, '#').split(':')[0].slice(0, 60); skips[k] = (skips[k] ?? 0) + 1; }
   }
   return { rows, open: h.positions().length, equity: r3(h.equity()), skips: Object.fromEntries(Object.entries(skips).sort((a, b) => b[1] - a[1]).slice(0, 12)) };
 }
