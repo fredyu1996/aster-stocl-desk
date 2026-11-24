@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { choosePicks, cycle, freshState, normalize, persistable } from '../core/desk.mjs';
 import { MIN, Scanner } from '../core/pmr.mjs';
-import { economics, learn, preTrade } from '../core/reviewer.mjs';
+import { economics, features, latestMss, learn, markCheck, preTrade } from '../core/reviewer.mjs';
 import { chartBars, pickUniverse } from '../core/aster.mjs';
 import { Conflict, store, update } from '../core/github.mjs';
 
@@ -224,4 +224,51 @@ test('chart klines use open time and flag the forming candle', async () => {
   assert.deepEqual(out.map(b => [b.t, b.c, b.closed]), [[T0, 1.5, true], [T0 + 15 * MIN, 1.8, false]]);
   assert.equal(asked.interval, '15m');
   await assert.rejects(chartBars('NVDAUSDT', '2h', { get: async () => rows }));
+});
+
+const mk = (o) => ({ id: o.id ?? Math.random().toString(36).slice(2), tf: '15m', ...o });
+
+test("Fred's latest hand-drawn MSS against the proposal vetoes it; auto and later marks don't count", () => {
+  const p = plan(); // long, entry 100, signal at T0
+  const bear = mk({ type: 'mss', dir: 'bear', t1: T0 - 60 * MIN, p1: 101 });
+  assert.match(markCheck(p, [bear]).veto, /bear MSS .* against this long/);
+  // a newer bull MSS overrides the older bear one
+  assert.equal(markCheck(p, [bear, mk({ type: 'mss', dir: 'bull', t1: T0 - 20 * MIN, p1: 99.5 })]).veto, null);
+  // auto marks and marks placed after the signal bar are ignored
+  assert.equal(markCheck(p, [{ ...bear, auto: true }]).veto, null);
+  assert.equal(markCheck(p, [{ ...bear, t1: T0 + 5 * MIN }]).veto, null);
+  assert.equal(latestMss([bear, { ...bear, id: 'x', dir: 'bull', t1: T0 - 30 * MIN }]).dir, 'bull');
+});
+
+test("an entry inside Fred's opposite-direction FVG / OB is vetoed; a same-direction zone on the POI is recorded as confluence", () => {
+  const p = plan(); // POI 99.4–99.9, entry FVG 99.8–100.2, entry 100
+  const against = mk({ type: 'ob', dir: 'bear', t1: T0 - 90 * MIN, t2: T0 - 75 * MIN, p1: 99.95, p2: 100.4 });
+  assert.match(markCheck(p, [against]).veto, /inside your bear OB/);
+  const same = mk({ id: 'z1', type: 'fvg', dir: 'bull', t1: T0 - 90 * MIN, t2: T0 - 60 * MIN, p1: 99.2, p2: 99.5 });
+  const r = markCheck(p, [same]);
+  assert.equal(r.veto, null);
+  assert.deepEqual(r.summary.with, ['z1']);
+  assert.equal(features({ ...p, marks: r.summary }).marks, 'confluence');
+  assert.equal(features(p).marks, 'none');
+  // a same-direction zone away from the POI and entry FVG is not confluence
+  assert.equal(markCheck(p, [{ ...same, p1: 101, p2: 102 }]).summary.confluence, false);
+});
+
+test('cycle declines a proposal against Fred\'s marks and records his marks on the plan', () => {
+  const series = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5]]);
+  const marks = { NVDAUSDT: [mk({ type: 'mss', dir: 'bear', t1: T0 - 30 * MIN, p1: 100.8 })] };
+  const s = run({ ...freshState(), marks }, series, T0 + 2 * MIN + 1);
+  assert.equal(s.decisions[0].status, 'Declined');
+  assert.match(s.decisions[0].reason, /^MARK · your bear MSS/);
+  assert.equal(s.orders.length, 0);
+  const ok = run({ ...freshState(), marks: { NVDAUSDT: [mk({ type: 'fvg', dir: 'bull', t1: T0 - 60 * MIN, p1: 99.3, p2: 99.6 })] } }, series, T0 + 2 * MIN + 1);
+  assert.equal(ok.decisions[0].status, 'Approved');
+  assert.equal(ok.orders[0].plan.marks.confluence, true);
+});
+
+test('Reviewer proposes "confluence only" when trades without Fred\'s zone lose in both halves', () => {
+  const trades = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, r: -0.8, exitAt: T0 + i * 60 * MIN,
+    plan: plan({ pattern: { type: ['FLAG', 'TRIANGLE', 'HNS', 'DOUBLE_TOP', 'INVERSE_HNS'][i % 5] }, direction: i % 2 ? 1 : -1,
+      poi: { type: i % 2 ? 'OB' : 'FVG' }, grade: 'A+', signalAt: Date.parse('2026-11-23T16:00:00Z') }) }));
+  assert.ok(learn(trades, {}).some(p => p.rule === 'marksConfluenceOnly'));
 });

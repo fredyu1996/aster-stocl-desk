@@ -41,7 +41,14 @@ Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅
 | PMR 層 | G：顯示／收埋 PMR 1H 突破線、目標、15m POI，同 Trader 嘅 limit／entry／SL／TP |
 | 揀股 | 每個圖 ★ Pin／Skip；右邊可以 pin 其他掃描中或者打代號加 |
 
-標記存喺 `state.marks`（有 sync 就寫返 data repo，所以 cloud 同其他瀏覽器都見到），北牆嘅縮圖都會畫出嚟。**標記只係你嘅筆記，唔會影響 Trader 落單。** Chart wall 嘅 K 線係直接攞 Aster klines，只用嚟睇；最後一支未收嘅 K 線會淡色顯示。Scanner 同 paper 成交照舊只用已完成嘅 1m bar。
+標記存喺 `state.marks`（有 sync 就寫返 data repo，所以 cloud 同其他瀏覽器都見到），北牆嘅縮圖都會畫出嚟。
+
+**你手畫嘅標記會影響 Trader**（自動標記唔計，喺 signal 之後先畫嘅都唔計）：
+
+- 你最新嗰條 MSS 係 Bear，Trader 就唔做 long；Bull 就唔做 short。
+- 入場價落喺你標嘅反方向 FVG／OB 入面，Reviewer 拒絕。
+- 你同方向嘅 FVG／OB 撞到 PMR 嘅 15m POI 或者 5m 入場 FVG，會記做 confluence。Reviewer 有足夠數據（≥ 8 單、前後兩半都輸、≤ −3R）先會提議「只做 confluence」，要你批准先生效。
+- 舊 zone 唔會自動過期，唔啱用就擦走。 Chart wall 嘅 K 線係直接攞 Aster klines，只用嚟睇；最後一支未收嘅 K 線會淡色顯示。Scanner 同 paper 成交照舊只用已完成嘅 1m bar。
 
 ## Reviewer 點樣學
 

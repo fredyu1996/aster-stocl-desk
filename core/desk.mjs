@@ -1,7 +1,7 @@
 // Desk state and one trading cycle. The same code runs in the browser and in the cloud bot (bot/run.mjs).
 // Paper only: fills, stops and targets are simulated on completed Aster 1m bars.
 import { MIN, Scanner, intel } from './pmr.mjs';
-import { grade, learn, preTrade, ruleKey } from './reviewer.mjs';
+import { grade, learn, markCheck, preTrade, ruleKey } from './reviewer.mjs';
 
 export const START = 1000;
 export const DEFAULT_CFG = {
@@ -153,7 +153,10 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     state.seen[plan.id] = now;
     event(state, plan.signalAt, 'trader', 'PROPOSAL', `${plan.symbol} ${plan.direction === 1 ? 'long' : 'short'} @ ${plan.entry} · ${plan.pattern.type.replaceAll('_', ' ')} · ${plan.grade}`, plan.symbol);
     const openNotional = state.positions.reduce((s, p) => s + p.entry * p.qty, 0) + state.orders.reduce((s, o) => s + o.entry * o.qty, 0);
-    const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : cfg.picksOnly && !picked.has(plan.symbol) ? { ok: false, reason: 'NOT_IN_PICKS' } : preTrade(plan, {
+    const mk = markCheck(plan, state.marks[plan.symbol]);
+    plan.marks = mk.summary;
+    const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : cfg.picksOnly && !picked.has(plan.symbol) ? { ok: false, reason: 'NOT_IN_PICKS' }
+      : mk.veto ? { ok: false, reason: mk.veto } : preTrade(plan, {
       cfg, equity: equityOf(state), openNotional, openCount: state.positions.length + state.orders.length,
       holding: [...state.positions, ...state.orders].some(x => x.symbol === plan.symbol),
       spec: universe.specs[plan.symbol], book: book[plan.symbol], funding: funding[plan.symbol], active: state.rules.active,

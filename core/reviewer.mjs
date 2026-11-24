@@ -19,7 +19,31 @@ export function economics(plan, cfg, fundingRate = 0, fundingDue = false) {
 
 export function features(plan) {
   return { pattern: plan.pattern.type, side: plan.direction === 1 ? 'long' : 'short', poi: plan.poi.type,
-    grade: plan.grade, session: usSession(plan.signalAt) ? 'us' : 'off', sweep: plan.sweep ? 'sweep' : 'nosweep' };
+    grade: plan.grade, session: usSession(plan.signalAt) ? 'us' : 'off', sweep: plan.sweep ? 'sweep' : 'nosweep',
+    marks: plan.marks?.confluence ? 'confluence' : 'none' };
+}
+
+// Fred's hand-drawn chart marks against one proposal. Auto marks and marks placed after the signal bar don't count.
+// Veto: his latest MSS points the other way, or the entry sits inside one of his opposite-direction FVG / OB zones.
+// Confluence (recorded, not required): one of his same-direction FVG / OB zones overlaps the 15m POI or the 5m entry FVG.
+const sideOf = d => d === 1 ? 'bull' : 'bear';
+const hand = (marks, at) => (Array.isArray(marks) ? marks : []).filter(m => m && !m.auto && Number.isFinite(m.t1) && m.t1 <= at);
+export function latestMss(marks, at = Infinity) {
+  return hand(marks, at).filter(m => m.type === 'mss' && (m.dir === 'bull' || m.dir === 'bear'))
+    .sort((a, b) => a.t1 - b.t1 || (a.at ?? 0) - (b.at ?? 0)).at(-1) ?? null;
+}
+export function markCheck(plan, marks) {
+  const mine = hand(marks, plan.signalAt), side = sideOf(plan.direction), px = n => Number(n).toFixed(2);
+  const zone = m => ({ lo: Math.min(m.p1, m.p2), hi: Math.max(m.p1, m.p2) });
+  const zones = mine.filter(m => (m.type === 'fvg' || m.type === 'ob') && Number.isFinite(m.p1) && Number.isFinite(m.p2));
+  const mss = latestMss(mine);
+  const ranges = [plan.poi, plan.fvg].filter(r => r && Number.isFinite(r.lo) && Number.isFinite(r.hi));
+  const withIds = zones.filter(m => m.dir === side && ranges.some(r => zone(m).lo <= r.hi && zone(m).hi >= r.lo)).map(m => m.id);
+  const summary = { confluence: withIds.length > 0, with: withIds, mss: mss?.dir ?? null, count: mine.length };
+  if (mss && mss.dir !== side) return { veto: `MARK · your ${mss.dir} MSS ${mss.tf ?? ''} @ ${px(mss.p1)} is against this ${side === 'bull' ? 'long' : 'short'}`, against: mss.id, summary };
+  const inside = zones.find(m => m.dir !== side && zone(m).lo <= plan.entry && plan.entry <= zone(m).hi);
+  if (inside) return { veto: `MARK · entry ${px(plan.entry)} is inside your ${inside.dir} ${inside.type.toUpperCase()} ${inside.tf ?? ''} ${px(zone(inside).lo)}–${px(zone(inside).hi)}`, against: inside.id, summary };
+  return { veto: null, against: null, summary };
 }
 
 export const RULES = {
@@ -28,6 +52,7 @@ export const RULES = {
   avoidPoi: { label: v => `No 15m ${v} entries`, test: (f, v) => f.poi === v },
   aPlusOnly: { label: () => 'A+ setups only (confluence + sweep)', test: f => f.grade !== 'A+' },
   usHoursOnly: { label: () => 'US regular hours only', test: f => f.session !== 'us' },
+  marksConfluenceOnly: { label: () => 'Only setups that hit one of your same-direction FVG / OB marks', test: f => f.marks !== 'confluence' },
 };
 export const ruleKey = r => `${r.rule}:${r.value ?? ''}`;
 export const ruleLabel = r => RULES[r.rule]?.label(r.value ?? '') ?? r.rule;
@@ -64,6 +89,7 @@ export function grade(trade) {
   add(trade.netRR >= 3, `Net R:R ${trade.netRR.toFixed(2)} (≥ 3 is strong)`, 10);
   add(trade.entryAt - trade.plan.signalAt <= 15 * 60_000, 'Filled within 15 min of the signal', 5);
   add(usSession(trade.plan.signalAt), 'Signal during US regular hours', 5);
+  add(!!trade.plan.marks?.confluence, 'Hit one of your same-direction FVG / OB marks', 0);
   if (trade.r >= 1.5) score += 30; else if (trade.r > 0) score += 15; else if (trade.r <= -0.9) score -= 15;
   if (trade.reason === 'Time exit' && trade.r < 0) { score -= 5; items.push({ ok: false, text: 'Time exit at a loss: no follow-through' }); }
   const letter = score >= 70 ? 'A' : score >= 55 ? 'B' : score >= 40 ? 'C' : score >= 25 ? 'D' : 'F';
@@ -82,7 +108,7 @@ export function learn(trades, reviews, decided = {}, minN = 8) {
     out.push({ rule, value, evidence });
   };
   const closed = trades.filter(t => Number.isFinite(t.r)).sort((a, b) => a.exitAt - b.exitAt);
-  const buckets = [['pattern', 'avoidPattern'], ['side', 'avoidSide'], ['poi', 'avoidPoi'], ['grade', 'aPlusOnly', 'A'], ['session', 'usHoursOnly', 'off']];
+  const buckets = [['pattern', 'avoidPattern'], ['side', 'avoidSide'], ['poi', 'avoidPoi'], ['grade', 'aPlusOnly', 'A'], ['session', 'usHoursOnly', 'off'], ['marks', 'marksConfluenceOnly', 'none']];
   for (const [field, rule, only] of buckets) {
     const values = new Set(closed.map(t => features(t.plan)[field]));
     for (const v of values) {
