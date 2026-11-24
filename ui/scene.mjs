@@ -295,7 +295,13 @@ export function createWorld(canvas, { onPick }) {
       if (!s.decisions?.length) row('No proposals yet', '');
       y += 10; row('Rule proposals', String(s.rules.proposals.length), '#fbbf24');
     } else {
-      for (const it of (s.intel ?? []).slice(0, 11)) row(`${hhmm(it.t)} ${it.type}`, it.title.replace('USDT', ''), it.type === 'FLOW' ? '#34d399' : '#38bdf8');
+      const m = s.market, ex = m?.exposure;
+      if (ex) {
+        row('US posture', `${ex.recommendation.replaceAll('_', ' ')} · ceiling ${ex.ceiling}%`, ex.recommendation === 'NEW_ENTRY_ALLOWED' ? C.up : ex.recommendation === 'REDUCE_ONLY' ? '#fbbf24' : C.down);
+        row('Breadth · uptrend', `${m.breadth ? `${m.breadth.composite} ${m.breadth.zone}` : 'n/a'} · ${m.uptrend ? `${m.uptrend.composite} ${m.uptrend.zone}` : 'n/a'}`);
+        y += 6;
+      }
+      for (const it of (s.intel ?? []).slice(0, ex ? 8 : 11)) row(`${hhmm(it.t)} ${it.type}`, it.title.replace('USDT', ''), it.type === 'FLOW' ? '#34d399' : '#38bdf8');
       if (!s.intel?.length) row('Quiet tape', '');
     }
     T.t.needsUpdate = true;

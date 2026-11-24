@@ -13,7 +13,7 @@
 | --- | --- |
 | 行路 | W A S D／方向鍵，Shift 跑，滾輪向前 |
 | 望 | 拖動滑鼠 |
-| 4 個 desk | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel |
+| 4 個 desk | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel · 5 Digest |
 | 牆 | B 北牆 picks wall · P 東牆持倉 · V 南牆 review wall · R 西牆規則同 agent comms |
 | 設定 | 右上 ⚙ |
 
@@ -49,6 +49,14 @@ Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅
 - 入場價落喺你標嘅反方向 FVG／OB 入面，Reviewer 拒絕。
 - 你同方向嘅 FVG／OB 撞到 PMR 嘅 15m POI 或者 5m 入場 FVG，會記做 confluence。Reviewer 有足夠數據（≥ 8 單、前後兩半都輸、≤ −3R）先會提議「只做 confluence」，要你批准先生效。
 - 舊 zone 唔會自動過期，唔啱用就擦走。 Chart wall 嘅 K 線係直接攞 Aster klines，只用嚟睇；最後一支未收嘅 K 線會淡色顯示。Scanner 同 paper 成交照舊只用已完成嘅 1m bar。
+
+## 由 claude-trading-skills 搬入嚟嘅功能
+
+由 [tradermonty/claude-trading-skills](https://github.com/tradermonty/claude-trading-skills)（MIT）揀咗 6 個 skill，改寫成 JS 喺 desk 入面行，原裝 skill 亦放咗喺 `.claude/skills/` 畀 Claude 用。**全部只係記錄同顯示，唔會擋單、改注碼或者取消掛單。**
+
+- **美股大市狀態（4 Intel）**：market-breadth-analyzer（S&P 500 breadth 6 項）、uptrend-analyzer（uptrend ratio 5 項）、exposure-coach（exposure 上限、建議、參與度、信心）。數據係 TraderMonty 公開 CSV，每小時最多更新一次。每個 proposal 都會記低當時嘅狀態。Exposure coach 只有 8 個輸入入面嘅 3 個（regime、top risk 要 FMP），所以佢一定扣 20 分、唔會講 NEW ENTRY ALLOWED。
+- **Digest（5）**：每週成績（win rate、expectancy、profit factor、R、MAE／MFE、按出場原因／形態／你嘅標記／大市狀態拆開），同 coach（risk、execution、process、regime 四方面嘅 findings 同建議；建議唔會自動生效）。
+- **Postmortem（5 Digest 下面）**：每個被拒絕嘅 proposal，等佢個窗口過咗之後，用 desk 自己嘅成交規則喺 1m bar 重播，睇下如果做咗會係幾多 R。按係邊個 filter 拒絕（picks、你嘅 MSS／FVG／OB 標記、net R:R、spread、規則）統計，≥ 8 單同前後兩半同一方向先會出結論。
 
 ## Reviewer 點樣學
 
