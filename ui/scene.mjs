@@ -8,7 +8,7 @@ export const DESKS = [
   { id: 'trader', key: '2', name: 'Trader', role: 'Paper fills · stops · targets', color: 0x818cf8, x: 6, z: -4 },
   { id: 'reviewer', key: '3', name: 'Reviewer', role: 'Net R:R gate · grades · rules', color: 0xc084fc, x: -6, z: 3 },
   { id: 'intel', key: '4', name: 'Market Intel', role: 'Taker flow · volume · funding', color: 0x34d399, x: 6, z: 3 },
-  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto-desk SMC on the picks', color: 0xf472b6, x: 11, z: 3 },
+  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto-desk SMC on stock perps', color: 0xf472b6, x: 11, z: 3 },
 ];
 const RX = 15, RZ = 10, RH = 4.6;
 const FONT = '"Inter", system-ui, sans-serif';

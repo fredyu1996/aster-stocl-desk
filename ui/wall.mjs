@@ -22,7 +22,7 @@ const DRAG = new Set(['fvg', 'ob', 'mss']), TAGS = new Set(['HH', 'HL', 'LH', 'L
 const AX = 70, BX = 22, MAX_BARS = 4000, MAX_MARKS = 120;
 const FONT = 'Inter, system-ui, sans-serif';
 const UP = C.up, DOWN = C.down, LIQ = '#fbbf24';
-const WHY = { held: '持倉中', pinned: '★ 你 pin 咗', setup: 'PMR setup', volume: '成交額' };
+const WHY = { held: '持倉中', pinned: '★ 你 pin 咗', smc: 'SMC setup', setup: 'PMR setup', volume: '成交額' };
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;

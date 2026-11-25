@@ -9,24 +9,26 @@ export const DEFAULT_CFG = {
   on: true, universe: 10, minVolume: 300_000, always: [], exclude: [],
   riskPct: 1, maxNotional: 1000, levCap: 10, maxOpen: 3,
   fee: 0.0004, slip: 0.0005, minNetRR: 2.0, maxSpreadPct: 0.15, timeExitMin: 90,
-  picks: 6, picksOnly: true,
+  picks: 6, picksOnly: true, smcScope: 'watch', pmr: {},
 };
 
 // Screener picks: the shortlist posted on the north wall. The Trader only takes PMR proposals on these.
-// Order: symbols the account holds, Fred's pins, then furthest PMR stage, then 24h volume. Fred's skips are left out.
+// Order: symbols either account holds, Fred's pins, symbols the SMC Trader is in a zone on, then furthest PMR stage, then
+// 24h volume. Fred's skips are left out.
 export const STAGE = { QUALIFIED: 6, LTF_CONFIRMED: 5, POI_TOUCHED: 4, WAIT_RETEST: 3, WAIT_POI: 2, PATTERN_CONFIRMED: 1 };
-export function choosePicks(scan, { board = [], pins = [], skips = [], held = [], n = 6 } = {}) {
+export function choosePicks(scan, { board = [], pins = [], skips = [], held = [], smc = [], n = 6 } = {}) {
   const vol = new Map(board.map((r, i) => [r.symbol, i]));
-  const why = s => held.includes(s.symbol) ? 'held' : pins.includes(s.symbol) ? 'pinned' : STAGE[s.status] ? 'setup' : 'volume';
-  const rank = { held: 3, pinned: 2, setup: 1, volume: 0 };
+  const why = s => held.includes(s.symbol) ? 'held' : pins.includes(s.symbol) ? 'pinned' : smc.includes(s.symbol) ? 'smc' : STAGE[s.status] ? 'setup' : 'volume';
+  const rank = { held: 4, pinned: 3, smc: 2, setup: 1, volume: 0 };
   const rows = scan.filter(s => s?.symbol && (held.includes(s.symbol) || !skips.includes(s.symbol))).map(s => ({ s, why: why(s) }));
   rows.sort((a, b) => rank[b.why] - rank[a.why] || (STAGE[b.s.status] ?? 0) - (STAGE[a.s.status] ?? 0) ||
     (vol.get(a.s.symbol) ?? 1e9) - (vol.get(b.s.symbol) ?? 1e9));
   return rows.filter((r, i) => i < n || r.why === 'held' || r.why === 'pinned')
     .map(({ s, why }) => ({ symbol: s.symbol, why, status: s.status, reason: s.reason ?? null, price: s.price ?? s.last?.c ?? null }));
 }
-const heldSymbols = s => [...s.orders, ...s.positions].map(x => x.symbol);
-export const pickInput = s => ({ board: s.board, pins: s.pins, skips: s.skips, held: heldSymbols(s), n: s.cfg.picks });
+const heldSymbols = s => [...s.orders, ...s.positions].map(x => x.symbol).concat(Object.keys(s.smc?.acct?.pos ?? {}));
+const smcZones = s => (s.smc?.scan?.cands ?? []).map(c => `${c.b}USDT`);
+export const pickInput = s => ({ board: s.board, pins: s.pins, skips: s.skips, held: heldSymbols(s), smc: smcZones(s), n: s.cfg.picks });
 
 export function freshState() {
   return { v: 1, cfg: { ...DEFAULT_CFG }, acct: { start: START, balance: START, equity: START, peak: START, maxDD: 0 },
@@ -144,7 +146,7 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
   for (const symbol of universe.watch) {
     const series = bars[symbol] ?? [];
     if (!series.length) continue;
-    const sc = makeScanner(symbol, series, { tickSize: universe.specs[symbol]?.tickSize });
+    const sc = makeScanner(symbol, series, { tickSize: universe.specs[symbol]?.tickSize, params: cfg.pmr });
     scanners[symbol] = sc;
     intelItems.push(...intel(sc));
   }

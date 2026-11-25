@@ -127,6 +127,25 @@ test('scanner is causal: a prefix of the bars yields exactly the prefix of the e
   }
 });
 
+const T1 = Date.UTC(2026, 0, 5);
+test('PMR params: defaults are v1.4, loosened variants are causal too, and targetR sets a fixed-multiple target', () => {
+  // A plain random walk; seed 32 happens to give one loosened PMR proposal.
+  let x = 100, seed = 32;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const series = [];
+  for (let i = 0; i < 12000; i++) {
+    const o = x; x = Math.max(5, x + (rnd() - 0.5) * 0.6 + Math.sin(i / 500) * 0.03);
+    series.push({ t: T1 + i * MIN, o, c: x, h: Math.max(o, x) + rnd() * 0.15, l: Math.min(o, x) - rnd() * 0.15, v: 10, q: 1000, tb: 500 });
+  }
+  assert.deepEqual(new Scanner('T', series, { params: {} }).events, new Scanner('T', series).events);
+  const P = { poiWaitMin: 60, retestMin: 240, mssMin: 90, fvgMin: 30, entryWindowMin: 120, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 };
+  const full = new Scanner('T', series, { params: P });
+  const part = new Scanner('T', series.slice(0, 7000), { params: P });
+  assert.deepEqual(part.events, full.events.filter(e => e.t <= series[6999].t));
+  for (const p of full.proposals) assert.ok(Math.abs(Math.abs(p.target - p.entry) - 2.5 * Math.abs(p.entry - p.stop)) <= 0.011, `${p.target} ${p.entry} ${p.stop}`);
+  assert.ok(full.proposals.length > 0, 'the synthetic series should produce at least one loosened proposal');
+});
+
 test('universe keeps stock perps above the volume floor plus held symbols', () => {
   const sym = (symbol, tags) => ({ symbol, status: 'TRADING', quoteAsset: 'USDT', contractType: 'PERPETUAL', underlyingSubType: tags, baseAsset: symbol,
     filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.01' }, { filterType: 'LOT_SIZE', stepSize: '0.01', minQty: '0.01' }, { filterType: 'MIN_NOTIONAL', notional: '5' }] });
@@ -192,6 +211,8 @@ test('picks: held, then pins, then furthest PMR stage, then 24h volume; skips ar
     [['EEE', 'pinned'], ['FFF', 'setup'], ['BBB', 'setup']]);
   // Held and pinned symbols stay even past n; a held symbol stays even when skipped.
   assert.deepEqual(choosePicks(scan, { board, n: 1, pins: ['DDD'], held: ['AAA'], skips: ['AAA'] }).map(p => p.symbol), ['AAA', 'DDD']);
+  // SMC zones rank after pins and before PMR setups
+  assert.deepEqual(choosePicks(scan, { board, n: 3, pins: ['EEE'], smc: ['AAA'] }).map(p => [p.symbol, p.why]), [['EEE', 'pinned'], ['AAA', 'smc'], ['CCC', 'setup']]);
 });
 
 test('the Trader only takes proposals on picks unless picksOnly is off', () => {

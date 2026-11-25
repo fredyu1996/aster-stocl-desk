@@ -126,8 +126,8 @@ export function confirmPattern(tracker, now) {
   return null;
 }
 
-function displacement(bar, a, dir) {
-  return a > 0 && signed(dir, bar.c, bar.o) >= 1.2 * a && Math.abs(bar.c - bar.o) >= 0.6 * (bar.h - bar.l);
+function displacement(bar, a, dir, k = 1.2) {
+  return a > 0 && signed(dir, bar.c, bar.o) >= k * a && Math.abs(bar.c - bar.o) >= 0.6 * (bar.h - bar.l);
 }
 
 function gap(bars, i, a, dir) {
@@ -138,14 +138,14 @@ function gap(bars, i, a, dir) {
 }
 
 export function findPOI(tracker, now) {
-  const { anchor } = tracker;
+  const { anchor } = tracker, P = tracker.P ?? PMR_DEFAULT;
   const bars = tracker.history[15];
   const dir = anchor.direction;
   const candidates = [];
-  for (let i = Math.max(15, bars.length - (now === anchor.t ? 8 : 10)); i < bars.length; i++) {
+  for (let i = Math.max(15, bars.length - (now === anchor.t ? 8 : 8 + Math.ceil(P.poiWaitMin / 15))); i < bars.length; i++) {
     const b = bars[i];
     const a = atr(bars, i);
-    if (b.t < anchor.t - 7 * 15 * MIN || b.t > anchor.t + 2 * 15 * MIN || !displacement(b, a, dir)) continue;
+    if (b.t < anchor.t - 7 * 15 * MIN || b.t > anchor.t + P.poiAfterBars * 15 * MIN || !displacement(b, a, dir, P.dispAtr)) continue;
     const level = anchor.boundary;
     const crosses = signed(dir, dir === 1 ? b.l : b.h, level) <= 0 && signed(dir, b.c, level) > 0;
     const continues = b.t > anchor.t && signed(dir, b.o, level) > 0 && Math.abs(b.o - level) <= 0.5 * anchor.atr;
@@ -156,7 +156,7 @@ export function findPOI(tracker, now) {
     const here = [origin && { lo: origin.l, hi: origin.h, createdAt: origin.t, knownAt: b.t, type: 'OB' }, gap(bars, i, a, dir)];
     for (const zone of here.filter(Boolean)) {
       const distance = Math.max(0, zone.lo - level, level - zone.hi);
-      if (distance <= 0.50 * anchor.atr && !bars.slice(i + 1).some(x => x.t > zone.knownAt && hits(x, zone))) {
+      if (distance <= P.poiDistAtr * anchor.atr && !bars.slice(i + 1).some(x => x.t > zone.knownAt && hits(x, zone))) {
         candidates.push({ ...zone, distance, impulse: b.t, crosses });
       }
     }
@@ -170,14 +170,18 @@ export function findPOI(tracker, now) {
 }
 
 export const TERMINAL = new Set(['SKIPPED', 'EXPIRED', 'CANCELLED']);
+// GMS PMR v1.4 timing and size limits. The live desk uses exactly these (cfg.pmr overrides only after Fred approves a change).
+// targetR null = the 1H pattern's measured-move target (v1.4); a number = a fixed multiple of the entry-to-stop distance.
+export const PMR_DEFAULT = Object.freeze({ poiWaitMin: 30, poiAfterBars: 2, poiDistAtr: 0.5, retestMin: 120, mssMin: 45, fvgMin: 15, dispAtr: 1.2, entryWindowMin: 60, targetR: null });
 const AGENT = { PATTERN_CONFIRMED: 'screener', WAIT_POI: 'screener', WAIT_RETEST: 'screener', POI_TOUCHED: 'trader',
   LTF_CONFIRMED: 'trader', QUALIFIED: 'trader', SKIPPED: 'reviewer', EXPIRED: 'reviewer', CANCELLED: 'reviewer' };
 
 // Scans one symbol's completed 1m bars and returns the setup state at the last bar plus every proposal made on the way.
 export class Scanner {
-  constructor(symbol, bars, { tickSize = 0.01 } = {}) {
+  constructor(symbol, bars, { tickSize = 0.01, params } = {}) {
     this.symbol = symbol;
     this.tickSize = tickSize;
+    this.P = { ...PMR_DEFAULT, ...(params ?? {}) };
     this.status = 'WAIT';
     this.history = { 1: [], 5: [], 15: [], 60: [] };
     this.events = [];
@@ -208,7 +212,8 @@ export class Scanner {
       const candle = frames[tf].get(t);
       if (candle) { closed[tf] = candle; this.history[tf].push(candle); }
     }
-    if (this.status === 'QUALIFIED' && t > this.plan.signalAt + 60 * MIN) {
+    const P = this.P;
+    if (this.status === 'QUALIFIED' && t > this.plan.signalAt + P.entryWindowMin * MIN) {
       this.transition(t, 'EXPIRED', 'ENTRY_WINDOW_PASSED', 'The 60-minute entry window ended.');
     }
     if (closed[60] && this.anchor && !TERMINAL.has(this.status) && this.status !== 'WAIT' &&
@@ -231,11 +236,11 @@ export class Scanner {
         this.choosePOI(t);
       }
     } else if (closed[15] && this.status === 'WAIT_POI') this.choosePOI(t);
-    if (this.status === 'WAIT_POI' && t >= this.anchor.t + 30 * MIN) {
+    if (this.status === 'WAIT_POI' && t >= this.anchor.t + P.poiWaitMin * MIN) {
       this.transition(t, 'SKIPPED', 'NO_FRESH_CAUSAL_POI', 'No fresh breakout-linked 15m zone in the allowed window.');
     }
     if (this.status === 'WAIT_RETEST' && t > Math.max(this.anchor.t, this.poi.knownAt)) {
-      if (t > this.anchor.t + 120 * MIN) this.transition(t, 'EXPIRED', 'EXPIRED_NO_TOUCH', 'No first touch within 120 minutes.');
+      if (t > this.anchor.t + P.retestMin * MIN) this.transition(t, 'EXPIRED', 'EXPIRED_NO_TOUCH', `No first touch within ${P.retestMin} minutes.`);
       else if (hits(b, this.poi)) {
         const dir = this.anchor.direction;
         this.touched = t;
@@ -249,9 +254,9 @@ export class Scanner {
       const dir = this.anchor.direction;
       this.retestExtreme = dir === 1 ? Math.min(this.retestExtreme, b.l) : Math.max(this.retestExtreme, b.h);
       if (t <= this.touched + 15 * MIN && this.sweep(b)) this.swept = true;
-      if (this.status === 'POI_TOUCHED' && t > this.touched + 45 * MIN) {
-        this.transition(t, 'EXPIRED', 'NO_LTF_CONFIRMATION', 'No qualifying 5m structure break within 45 minutes.');
-      } else if (this.status === 'LTF_CONFIRMED' && t > this.mss.t + 15 * MIN) {
+      if (this.status === 'POI_TOUCHED' && t > this.touched + P.mssMin * MIN) {
+        this.transition(t, 'EXPIRED', 'NO_LTF_CONFIRMATION', `No qualifying 5m structure break within ${P.mssMin} minutes.`);
+      } else if (this.status === 'LTF_CONFIRMED' && t > this.mss.t + P.fvgMin * MIN) {
         this.transition(t, 'EXPIRED', 'NO_ASSOCIATED_FVG', 'The displacement did not produce an associated fresh gap.');
       } else if (closed[5]) this.checkEntry(t);
     }
@@ -278,7 +283,7 @@ export class Scanner {
     if (!a || b.start < this.touched) return;
     if (this.status === 'POI_TOUCHED') {
       const pivot = pivots(bars, dir === 1 ? 'h' : 'l', i).at(-1);
-      if (pivot && signed(dir, b.c, pivot.price) >= 0.05 * a && signed(dir, bars[i - 1].c, pivot.price) <= 0 && displacement(b, a, dir)) {
+      if (pivot && signed(dir, b.c, pivot.price) >= 0.05 * a && signed(dir, bars[i - 1].c, pivot.price) <= 0 && displacement(b, a, dir, this.P.dispAtr)) {
         this.mss = { t: b.t, i, atr: a };
         this.transition(t, 'LTF_CONFIRMED', '5M_MSS_DISPLACEMENT', '5m structure break confirmed. Waiting for the third candle to complete the gap.');
       }
@@ -292,9 +297,9 @@ export class Scanner {
     const far = dir === 1 ? Math.min(this.retestExtreme, this.poi.lo) : Math.max(this.retestExtreme, this.poi.hi);
     const raw = (far - dir * 0.15 * a) / step;
     const stop = (dir === 1 ? Math.floor(raw) : Math.ceil(raw)) * step;
-    const target = roundTo(this.anchor.target, step);
-    const reward = signed(dir, target, entry);
     const risk = signed(dir, entry, stop);
+    const target = roundTo(this.P.targetR ? entry + dir * this.P.targetR * risk : this.anchor.target, step);
+    const reward = signed(dir, target, entry);
     if (risk <= 0 || reward <= 0) {
       this.transition(t, 'SKIPPED', 'INVALID_PERPETUAL_PLAN', 'Entry, stop and target do not form a valid trade.');
       return;
@@ -302,7 +307,7 @@ export class Scanner {
     const grade = this.poi.confluence && this.swept ? 'A+' : 'A';
     this.plan = {
       id: `${this.symbol}-${t}`, symbol: this.symbol, direction: dir, entry, stop, target, grossRR: reward / risk, grade,
-      signalAt: t, expiresAt: t + 60 * MIN, atr5: a, fvg,
+      signalAt: t, expiresAt: t + this.P.entryWindowMin * MIN, atr5: a, fvg,
       pattern: { type: this.anchor.type, t: this.anchor.t, boundary: this.anchor.boundary, target: this.anchor.target, atr: this.anchor.atr },
       poi: { type: this.poi.type, lo: this.poi.lo, hi: this.poi.hi, knownAt: this.poi.knownAt, confluence: this.poi.confluence },
       firstRetestAt: this.touched, mssAt: this.mss.t, sweep: !!this.swept,
