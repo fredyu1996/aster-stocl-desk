@@ -140,13 +140,15 @@ export function withSmc(state, market, core, opts) {
 }
 
 // Live: one desk cycle for the SMC account. Runs every 5m step since the last one (ticks at most the last 12, walks all),
-// on the picks (Trader picks-only rule) plus held symbols. Fred's hand-drawn marks veto entries the same way as for PMR.
+// on every watched stock minus Fred's skips (cfg.smcScope 'picks': the picks only) plus held symbols. Fred's hand-drawn marks veto entries the same way as for PMR.
 export function smcCycle(state, market, core, { now = market.t } = {}) {
   const smc = state.smc ?? (state.smc = { acct: null, lastStep: 0, trades: [], decisions: [], scan: null, on: true });
   const end = Math.floor(Math.floor(now / MIN) * MIN / M5) * M5;
   if (smc.lastStep >= end) return state;
   const held = Object.keys(smc.acct?.pos ?? {});
-  const coins = state.cfg.picksOnly ? state.picks.map(p => p.symbol) : market.universe.watch;
+  // Fred (2026-11-25): the SMC Trader scans every watched stock (top by volume + pins + held), minus his skips.
+  // cfg.smcScope 'picks' puts it back on the picks wall only.
+  const coins = state.cfg.smcScope === 'picks' ? state.picks.map(p => p.symbol) : market.universe.watch.filter(s => !state.skips.includes(s));
   const D = {};
   for (const s of new Set([...coins, ...held])) if (market.bars[s]?.length) D[s] = framesFrom1m(market.bars[s]);
   const { h } = core;

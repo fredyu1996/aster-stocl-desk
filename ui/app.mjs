@@ -182,7 +182,7 @@ function screener() {
     <td class="muted">${esc(s.reason ?? '')}</td><td>${s.anchor ? `${s.anchor.type.replaceAll('_', ' ')} ${s.anchor.direction === 1 ? '↑' : '↓'} ${hhmm(s.anchor.t)}` : ''}</td></tr>`);
   return `<h2>Screener · GMS PMR v1.4</h2>
     <p class="muted">Completed 1H breakout from a known pattern → fresh causal 15m OB/FVG → first retest within 120 min → 5m MSS + displacement within 45 min → FVG midpoint entry (60 min window). Click a row for its 1H / 15m / 5m charts.</p>
-    <p>The top ${state.cfg.picks} (held, your pins, then furthest PMR stage, then volume) go on the north wall as picks.${state.cfg.picksOnly ? ' The Trader only takes proposals on picks.' : ''} <button data-open="wall">Open picks wall (B)</button></p>
+    <p>The top ${state.cfg.picks} (held by either trader, your pins, SMC zones, then furthest PMR stage, then volume) go on the north wall as picks.${state.cfg.picksOnly ? ' The PMR Trader only takes proposals on picks.' : ''} The SMC Trader scans ${state.cfg.smcScope === 'picks' ? 'the picks only' : 'every watched stock minus your skips'}. <button data-open="wall">Open picks wall (B)</button></p>
     ${table(['Symbol', 'Pick', 'Last', 'State', 'Reason', '1H pattern'], rows)}`;
 }
 
@@ -326,7 +326,7 @@ function smcPanel() {
     <td class="muted">${esc(t.reason)}</td><td class="${t.pnl >= 0 ? 'up' : 'down'}">${money(t.pnl)}</td><td>${t.r.toFixed(2)}R</td></tr>`);
   const dec = (m.decisions ?? []).slice(0, 12).map(d => `<tr><td>${hhmm(d.t)}</td><td>${esc(d.symbol.replace('USDT', ''))}</td><td>${d.side === 'L' ? 'Long' : 'Short'}</td><td class="${d.status === 'Entered' ? 'up' : 'warn'}">${esc(d.status)}</td><td class="muted">${esc(d.reason)}</td></tr>`);
   return `<h2>SMC Trader · second paper account</h2>
-    <p class="muted">Your crypto desk's SMC Trader (small-cap settings) running its own code (${esc(SMC_SOURCE.code)}) on the north-wall picks${state.cfg.picksOnly ? '' : ' (picks-only is off: every watched stock)'}.
+    <p class="muted">Your crypto desk's SMC Trader (small-cap settings) running its own code (${esc(SMC_SOURCE.code)}) on ${state.cfg.smcScope === 'picks' ? 'the north-wall picks' : `every watched stock (${(state.board ?? []).length ? 'top by volume' : 'top by volume'} + your pins, minus your skips)`}.
     Setup: liquidity sweep → structure shift with displacement → FVG (else OB) pullback on 15m (1h filter) or 1h (4h filter), plus continuations; never against its higher timeframe.
     Rules in force from your crypto Reviewer: ${esc(Object.entries(SMC_ADJ).map(([k, v]) => v === true ? k : `${k} ${v}`).join(' · '))}. Your hand-drawn MSS / FVG / OB marks veto entries against them, as for the PMR Trader.
     It steps at each 5m close (5m candles walk open positions, adverse extreme first), the same way your crypto backtester replays.</p>
@@ -375,7 +375,9 @@ function backtestPanel() {
   return `<h2>Backtest · ${d.days} days · ${d.symbols.length} stock perps</h2>
     <p class="muted">${new Date(d.from).toLocaleDateString('en-CA')} → ${new Date(d.to).toLocaleDateString('en-CA')} · run ${new Date(d.t).toLocaleString('en-CA')} · ${esc(d.symbols.map(s => s.replace('USDT', '')).join(', '))}.
       Report only: it never changes either trader. ${esc(d.notes.slice(1).join(' '))}</p>
-    ${btBlock('PMR Trader (GMS PMR v1.4)', d.pmr)}${btBlock('SMC Trader (crypto-desk code, small-cap settings)', d.smc)}`;
+    ${btBlock('PMR Trader (GMS PMR v1.4)', d.pmr)}${d.pmr.variants ? `<h3>PMR variants (report only, none live)</h3>
+      <p class="muted">Funnel for v1.4: ${d.pmr.variants[0].funnel.breakouts} 1H breakouts → ${d.pmr.variants[0].funnel.poi} fresh 15m zones → ${d.pmr.variants[0].funnel.retest} first retests → ${d.pmr.variants[0].funnel.mss} 5m MSS → ${d.pmr.variants[0].funnel.proposals} proposals. When proposals do form, most fail net R:R: the 1H measured-move target is mostly used up by the time the 5m entry forms.</p>
+      ${table(['Variant', 'Proposals', 'Trades', 'Win', 'Avg R', 'Total R', 'First half', 'Second half'], d.pmr.variants.map(v => `<tr><td>${esc(v.name)}</td><td>${v.proposals}</td><td>${v.all.n}</td><td>${v.all.win == null ? '—' : `${v.all.win}%`}</td><td>${v.all.avgR ?? '—'}</td><td>${v.all.totR}R</td><td>${v.halves[0].totR}R (n ${v.halves[0].n})</td><td>${v.halves[1].totR}R (n ${v.halves[1].n})</td></tr>`))}` : ''}${btBlock('SMC Trader (crypto-desk code, small-cap settings)', d.smc)}`;
 }
 
 const A_CHIPS = [['same', 'Same trade'], ['skip', 'Skip it'], ['flip', 'Other side'], ['later', 'Enter later / deeper'], ['earlier', 'Enter earlier'],
@@ -415,7 +417,8 @@ function settings() {
     ${num('fee', 'Taker fee per side (0.0004 = 0.04%)')}${num('slip', 'Exit slippage (0.0005 = 0.05%)')}${num('timeExitMin', 'Time exit (min)', 1)}
     <label>Always watch (comma list)<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>Exclude (comma list)<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
-    <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> Both traders only take setups on the picks wall</label></p>
+    <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> PMR Trader only takes proposals on the picks wall</label></p>
+    <label>SMC Trader scans<select data-cfg="smcScope">${[['watch', 'Every watched stock (minus skips)'], ['picks', 'Only the picks wall']].map(([v, l]) => `<option value="${v}" ${c.smcScope === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>3D room</h3><label>Mouse look<select data-look>${[['follow', 'Follow the mouse (no click)'], ['fast', 'Follow the mouse, faster'], ['drag', 'Only while dragging']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <p class="muted">Follow: the view turns as the mouse moves; keep the cursor at the left or right edge to keep turning. Clicks still pick desks and walls.</p>
     <h3>Shared account (GitHub sync)</h3>
@@ -448,6 +451,7 @@ $('#panel').addEventListener('change', e => {
   if (!k) return;
   let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
   if (['always', 'exclude'].includes(k)) v = String(v).toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
+  else if (k === 'smcScope') v = v === 'picks' ? 'picks' : 'watch';
   else if (typeof v === 'string') { v = Number(v); if (!Number.isFinite(v)) return; }
   mutate(s => { s.cfg[k] = v; });
 });

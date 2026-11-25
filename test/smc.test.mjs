@@ -49,13 +49,19 @@ function fakeCore(seen) {
 }
 const market = now => ({ t: now, universe: { watch: ['NVDAUSDT', 'AMDUSDT'] }, bars: { NVDAUSDT: ones(3 * 24 * 60), AMDUSDT: ones(3 * 24 * 60) }, funding: {} });
 
-test('SMC cycle: trades the picks only, ticks at most the last 12 steps, and Fred\'s marks veto an entry against them', () => {
+test('SMC cycle: scans every watched stock minus skips (or the picks), ticks at most the last 12 steps, and Fred\'s marks veto an entry against them', () => {
   const now = T0 + 3 * 24 * H, seen = { steps: [] };
   const s = { ...freshState(), picks: [{ symbol: 'NVDAUSDT', why: 'setup', status: 'WAIT' }],
     marks: { NVDAUSDT: [{ id: 'm', type: 'mss', dir: 'bear', t1: now - 60 * MIN, p1: 101, tf: '15m' }] }, smc: { acct: null, lastStep: now - 30 * M5, trades: [], decisions: [] } };
   smcCycle(s, market(now), fakeCore(seen), { now });
   assert.equal(seen.steps.length, 12);
-  assert.ok(seen.steps.every(x => x.coins.join() === 'NVDAUSDT'));
+  assert.ok(seen.steps.every(x => x.coins.join() === 'NVDAUSDT,AMDUSDT'));
+  const skipped = { ...freshState(), skips: ['AMDUSDT'], picks: [], smc: { lastStep: now - M5, trades: [], decisions: [] } }, seen2 = { steps: [] };
+  smcCycle(skipped, market(now), fakeCore(seen2), { now });
+  assert.equal(seen2.steps.at(-1).coins.join(), 'NVDAUSDT');
+  const onlyPicks = { ...freshState(), cfg: { ...freshState().cfg, smcScope: 'picks' }, picks: [{ symbol: 'AMDUSDT' }], smc: { lastStep: now - M5, trades: [], decisions: [] } }, seen3 = { steps: [] };
+  smcCycle(onlyPicks, market(now), fakeCore(seen3), { now });
+  assert.equal(seen3.steps.at(-1).coins.join(), 'AMDUSDT');
   assert.equal(s.smc.lastStep, now);
   assert.equal(s.smc.decisions[0].status, 'Declined');
   assert.match(s.smc.decisions[0].reason, /^MARK · your bear MSS/);

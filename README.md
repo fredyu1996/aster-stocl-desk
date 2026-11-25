@@ -28,7 +28,7 @@
 
 ## Picks wall（北牆，B）
 
-Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅 → 你 pin 咗嘅 → PMR 行得最前嘅（QUALIFIED > LTF confirmed > POI touched > wait retest > wait POI > pattern confirmed）→ 24h 成交額。你 skip 咗嘅唔會上牆，除非仲有持倉。**Trader 只會接 picks 入面嘅 PMR proposal**，其他股出 proposal 會記做 `NOT_IN_PICKS`。
+Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅（兩個 trader）→ 你 pin 咗嘅 → SMC Trader 而家有 setup 嘅 → PMR 行得最前嘅（QUALIFIED > LTF confirmed > POI touched > wait retest > wait POI > pattern confirmed）→ 24h 成交額。你 skip 咗嘅唔會上牆，除非仲有持倉。**PMR Trader 只會接 picks 入面嘅 proposal**，其他股出 proposal 會記做 `NOT_IN_PICKS`。SMC Trader 預設唔受 picks 限制（見下面）。
 
 撳北牆（或者按 B）打開全螢幕 chart wall：
 
@@ -52,15 +52,15 @@ Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅
 
 ## 第二個 trader：SMC Trader（6）
 
-你 crypto desk 嘅 SMC Trader（small caps 設定），用佢自己嘅 code（`vendor/smc-core.js` = aster-desk 嘅 `bot/core.js`，原封不動）喺 stock picks 上面做 paper trading，自己一個 $1,000 帳戶。
+你 crypto desk 嘅 SMC Trader（small caps 設定），用佢自己嘅 code（`vendor/smc-core.js` = aster-desk 嘅 `bot/core.js`，原封不動）喺股票永續上面做 paper trading，自己一個 $1,000 帳戶。
 
 - Setup 同 crypto 一樣：liquidity sweep → structure shift（displacement）→ FVG（冇就 OB）回踩，15m（睇 1h）或者 1h（睇 4h），加 continuation；唔做逆 HTF 嘅單。Crypto Reviewer 而家生效嘅規則照用：needHTF、minQ 65、needDepth、obQ、stop 0.6% beyond sweep、+1.2R 走一半。
-- 每個 5m close 行一步（同你 crypto backtester 一樣），持倉用 5m K 線逐支行（先行逆向極值）。只做 picks；你手畫嘅 MSS／FVG／OB 一樣會擋對頭嘅單。
+- 每個 5m close 行一步（同你 crypto backtester 一樣），持倉用 5m K 線逐支行（先行逆向極值）。預設掃成個 watch list（成交額夠嘅股票永續，減你 skip 咗嘅），有 setup 嘅股會自動上北牆；⚙ SMC scope 可以改返「只做 picks」。你手畫嘅 MSS／FVG／OB 一樣會擋對頭嘅單。
 - 設定係 2026-11-24 由 crypto desk 抄過嚟嘅快照；crypto 嗰邊改咗，要再同步。
 
 ## Backtest（7）
 
-每晚（Actions → backtest，亦可以手動 Run workflow）用兩個 trader 跑**今日成交額最大嘅 10 隻股票永續 × 180 日**，報告放喺呢個 repo 嘅 `backtest-report` branch，7 Backtest panel 直接讀。報告寫晒整體、前後兩半、每隻股、每個月、出場原因、最近嘅單。**只係報告，唔會改任何 trader。** 冇模擬：picks、你嘅標記、spread、funding；股票名單係今日嘅（下咗市嘅冇計）。
+每晚（Actions → backtest，亦可以手動 Run workflow）用兩個 trader 跑**今日成交額最大嘅 10 隻股票永續 × 180 日**，報告放喺呢個 repo 嘅 `backtest-report` branch，7 Backtest panel 直接讀。報告寫晒整體、前後兩半、每隻股、每個月、出場原因、最近嘅單。PMR 仲有一張「variants」表：同一批數據試 v1.4 同幾個放鬆版本（時間窗 ×2、displacement 0.8 ATR、R:R 1.5、固定 2.5R target），連 funnel（1H breakout → 15m zone → retest → 5m MSS → proposal）。**只係報告，唔會改任何 trader**；live 一直用 v1.4（`cfg.pmr = {}`），要你批先會改。 冇模擬：picks、你嘅標記、spread、funding；股票名單係今日嘅（下咗市嘅冇計）。
 
 本機：`BT_DAYS=7 BT_TOP=3 BT_OUT=/tmp/bt.json node bot/backtest.mjs`
 
