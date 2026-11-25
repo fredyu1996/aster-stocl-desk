@@ -122,8 +122,9 @@ export function createWorld(canvas, { onPick }) {
 
   // Walking: WASD / arrows, wheel to step. Looking: the view follows the mouse without a click (Settings → Mouse look),
   // the cursor near the left / right edge keeps turning, and drag-to-look still works (and is the only mode on touch).
+  // Esc with nothing open holds the view still (mouse-follow and edge turning off) until Esc again; dragging still turns.
   const keys = new Set();
-  let yaw = 0, pitch = -0.05, drag = null, moved = 0, hoverPt = null, edge = 0;
+  let yaw = 0, pitch = -0.05, drag = null, moved = 0, hoverPt = null, edge = 0, still = false;
   const LOOK = { follow: 0.0009, fast: 0.0018, drag: 0 };
   let look = (() => { try { return JSON.parse(localStorage.getItem('asd_look')) ?? 'follow'; } catch { return 'follow'; } })();
   addEventListener('keydown', e => { if (!e.target.closest('input,textarea,select') && !document.body.classList.contains('wall-open')) keys.add(e.code); });
@@ -136,7 +137,7 @@ export function createWorld(canvas, { onPick }) {
       yaw -= dx * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * 0.004)); drag = { x: e.clientX, y: e.clientY };
       hoverPt = null; return;
     }
-    const k = LOOK[look] ?? 0;
+    const k = still ? 0 : LOOK[look] ?? 0;
     if (!k || e.pointerType !== 'mouse' || document.body.classList.contains('wall-open')) { hoverPt = null; edge = 0; return; }
     // Gentle enough that a desk you move the cursor towards still comes under it; the edges do the big turns.
     if (hoverPt) { yaw -= (e.clientX - hoverPt.x) * k; pitch = Math.max(-0.9, Math.min(0.9, pitch - (e.clientY - hoverPt.y) * k * 0.7)); flight = null; }
@@ -176,7 +177,7 @@ export function createWorld(canvas, { onPick }) {
     const s = (keys.has('KeyD')) - (keys.has('KeyA'));
     if (keys.has('ArrowLeft')) yaw += 1.8 * dt;
     if (keys.has('ArrowRight')) yaw -= 1.8 * dt;
-    if (edge && !drag && (LOOK[look] ?? 0)) { yaw += edge * 1.5 * dt; flight = null; }
+    if (edge && !drag && !still && (LOOK[look] ?? 0)) { yaw += edge * 1.5 * dt; flight = null; }
     if (f || s) { flight = null; walk(s * sp, f * sp); }
     if (flight) {
       flight.t = Math.min(1, flight.t + Math.min(real, 0.5) * 1.4);
@@ -336,6 +337,8 @@ export function createWorld(canvas, { onPick }) {
   return {
     camera,
     get look() { return look; },
+    get still() { return still; },
+    setStill(v) { still = !!v; hoverPt = null; edge = 0; },
     setLook(v) { look = v in LOOK ? v : 'follow'; hoverPt = null; edge = 0; try { localStorage.setItem('asd_look', JSON.stringify(look)); } catch { /* storage blocked */ } },
     goTo: (id, panel) => { const sp = SPOTS[id]; if (sp) goTo(sp[0], sp[1], sp[2] - (panel && innerWidth > 900 ? 0.3 : 0)); },
     boardAt: uv => {

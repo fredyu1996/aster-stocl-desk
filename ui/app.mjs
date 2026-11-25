@@ -17,16 +17,27 @@ const LS = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage full or blocked */ } },
 };
-const QUIET = 30 * 60_000;
+// Who trades the shared account (like the crypto desk's Sync): the cloud, or one browser. A browser takes over when the
+// cloud has been quiet for 30 min or when Fred clicks "Take over"; another browser that stops cycling for 5 min is gone.
+const QUIET = 30 * 60_000, BROWSER_QUIET = 5 * 60_000;
+const CODE_REPO = 'fredyu1996/aster-stocl-desk'; // public: its cloud-trader runs are readable without a token
 
 let state = normalize(LS.get('asd_state', null));
-let sync = LS.get('asd_sync', { repo: 'fredyu1996/aster-desk-data', branch: 'stocks-state', token: '' });
+const device = () => /Mac/.test(navigator.userAgent) ? 'Mac' : /Windows/.test(navigator.userAgent) ? 'Windows PC' : /iPhone|iPad|Android/.test(navigator.userAgent) ? 'Phone' : 'Computer';
+let sync = { repo: 'fredyu1996/aster-desk-data', branch: 'stocks-state', token: '', name: '', dev: '', ...LS.get('asd_sync', {}) };
+if (typeof sync.on !== 'boolean') sync.on = !!sync.token;
+if (!sync.dev) sync.dev = Math.random().toString(36).slice(2, 10);
+if (!sync.name) sync.name = device();
+LS.set('asd_sync', sync);
 let scanMap = {};
-let status = { feed: 'Connecting', note: '', source: 'local paper', at: 0 };
+// role: off | connecting | trading | viewing | error. lock = the shared lastCycle (who traded last).
+let status = { feed: 'Connecting', note: '', source: 'local paper', at: 0, role: sync.on ? 'connecting' : 'off', err: '', lock: null, takeover: false };
+let cloudRuns = { at: 0, runs: null, err: '' };
+let draft = {};
 let panel = null;
 let busy = false;
 const cache = {};
-const st = () => sync.token ? store({ token: sync.token, repo: sync.repo, branch: sync.branch }) : null;
+const st = () => sync.on && sync.token ? store({ token: sync.token, repo: sync.repo, branch: sync.branch }) : null;
 
 const world = createWorld($('#scene'), {
   onPick(id, uv) {
@@ -85,16 +96,18 @@ function render() {
     <span>Equity <b>${money(a.equity)}</b> <i class="${a.equity >= a.start ? 'up' : 'down'}">${pct((a.equity / a.start - 1) * 100)}</i></span>
     <span>Picks <b>${state.picks.length}</b> · Open ${state.positions.length} · Pending ${state.orders.length} · Trades ${state.trades.length}</span>
     <span>Feed <b class="${status.feed === 'Live' ? 'up' : 'warn'}">${esc(status.feed)}</b>${status.at ? ` · ${hhmm(status.at)}` : ''}</span>
-    <span>${esc(status.source)}${state.lastCycle ? ` · last cycle ${esc(state.lastCycle.by)} ${ago(state.lastCycle.t)} ago` : ''}</span>
+    ${syncChip()}
     ${status.note ? `<span class="warn">${esc(status.note)}</span>` : ''}`;
+  $('#still').hidden = !world.still;
   if (panel) renderPanel();
 }
 
 // Symbols always scanned: what the account holds plus Fred's pinned picks.
 function held(s) { return [...s.orders, ...s.positions].map(x => x.symbol).concat(s.pins ?? []); }
 
+let again = false;
 async function refresh() {
-  if (busy) return;
+  if (busy) { again = true; return; }
   busy = true;
   try {
     let market;
@@ -116,26 +129,31 @@ async function refresh() {
     if (!store_) {
       state = withSmc(cycle(state, market, { by: 'browser' }), market, core);
       LS.set('asd_state', persistable(state));
-      status.source = 'local paper (this browser)';
+      status.source = 'local paper (this browser)'; status.role = 'off';
       return;
     }
-    const { state: remote } = await store_.read();
-    const shared = normalize(remote);
-    const cloudQuiet = !shared.lastCycle || Date.now() - shared.lastCycle.t > QUIET || shared.lastCycle.by === 'browser';
-    if (cloudQuiet) {
-      const res = await update(store_, s => persistable(withSmc(cycle(normalize(s), market, { by: 'browser' }), market, core)));
+    loadCloudRuns();
+    try {
+      // Decide on the fresh copy inside update(): if someone else took the desk since our read, we view instead.
+      const res = await update(store_, s => {
+        const n = normalize(s);
+        if (!(status.takeover || mayTrade(n.lastCycle))) return null;
+        const next = withSmc(cycle(n, market, { by: 'browser' }), market, core);
+        next.lastCycle = { ...next.lastCycle, dev: sync.dev, name: sync.name };
+        return persistable(next);
+      });
       state = normalize(res.state);
-      status.source = `shared · this browser trades (cloud quiet${shared.cloud ? ` ${ago(shared.cloud.t)}` : ''})`;
-    } else {
-      state = shared;
-      status.source = `shared · cloud trades (run ${shared.cloud?.run ?? '—'}, ${ago(shared.cloud?.t ?? shared.lastCycle.t)} ago)`;
-    }
+      status.takeover = false; status.err = ''; status.lock = state.lastCycle;
+      status.role = res.skipped ? 'viewing' : 'trading';
+      status.source = res.skipped ? `shared · viewing (${lockName(state.lastCycle)} trades)` : `shared · trading on this ${sync.name}`;
+    } catch (e) { status.role = 'error'; status.err = explain(e.message); }
   } catch (e) {
     status.note = e.message;
   } finally {
     busy = false;
     Object.assign(state.marks, pendingMarks);
     render();
+    if (again) { again = false; setTimeout(refresh, 0); }
   }
 }
 
@@ -151,6 +169,115 @@ async function mutate(fn) {
   render();
 }
 
+// ---------------- sync: who trades the shared account ----------------
+function mayTrade(L) {
+  if (!L) return true;
+  const age = Date.now() - L.t;
+  if (L.by === 'browser') return !L.dev || L.dev === sync.dev || age > BROWSER_QUIET; // no dev = saved before devices were named
+  return age > QUIET; // the cloud, or handed back to it
+}
+const explain = m => m + ({ 401: ' — the token is wrong or expired.', 403: ' — the token needs Contents: Read and write on the data repo.',
+  404: ' — check the repo and branch names, and that the token can see the data repo.' }[m.match(/HTTP (\d+)/)?.[1]] ?? '');
+function lockName(L) {
+  if (!L) return 'nobody yet';
+  if (L.by === 'browser') return L.dev === sync.dev || !L.dev ? `this ${sync.name}` : (L.name ?? 'another browser');
+  return L.by === 'handback' ? 'the cloud (handed back, waiting for its next run)' : 'the cloud';
+}
+async function handBack() {
+  const store_ = st();
+  if (!store_) return;
+  try {
+    const res = await update(store_, s => { const n = normalize(s); n.lastCycle = { ...(n.lastCycle ?? {}), t: Date.now(), by: 'handback', dev: sync.dev, name: sync.name }; return persistable(n); });
+    state = normalize(res.state); status.lock = state.lastCycle; status.role = 'viewing'; status.err = '';
+  } catch (e) { status.role = 'error'; status.err = explain(e.message); }
+  render();
+}
+// The cloud trader's recent GitHub Actions runs (public repo, no token): shows a stopped timer or an expired DATA_TOKEN.
+async function loadCloudRuns(force = false) {
+  if (!force && Date.now() - cloudRuns.at < 4 * 60_000) return;
+  cloudRuns.at = Date.now();
+  try {
+    const r = await fetch(`https://api.github.com/repos/${CODE_REPO}/actions/workflows/cloud-trader.yml/runs?per_page=6`,
+      { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', referrerPolicy: 'no-referrer' });
+    if (!r.ok) throw new Error(`GitHub ${r.status}`);
+    cloudRuns.runs = (await r.json()).workflow_runs.map(w => ({ n: w.run_number, t: Date.parse(w.run_started_at ?? w.created_at), event: w.event, status: w.status, result: w.conclusion, url: w.html_url }));
+    cloudRuns.err = '';
+  } catch (e) { cloudRuns.err = e.message; }
+  render();
+}
+function cloudHealth() {
+  if (!cloudRuns.runs) return null;
+  const r = cloudRuns.runs.find(x => x.status === 'completed');
+  if (!r) return { level: 'warn', text: 'no finished cloud runs yet' };
+  if (r.result !== 'success') return { level: 'down', text: `last cloud run failed ${ago(r.t)} ago`, url: r.url };
+  if (Date.now() - r.t > 20 * 60_000) return { level: 'warn', text: `cloud quiet for ${ago(r.t)}` };
+  return { level: 'up', text: `cloud checked in ${ago(r.t)} ago` };
+}
+function syncChip() {
+  const R = status.role, L = status.lock, h = sync.on ? cloudHealth() : null;
+  let txt = { off: 'SYNC OFF', connecting: 'CONNECTING…', trading: 'SYNCED · TRADING HERE', error: 'SYNC ERROR',
+    viewing: L?.by === 'browser' ? `VIEWING · ${String(L.name ?? 'browser').toUpperCase().slice(0, 14)} TRADES` : 'VIEWING · CLOUD TRADES' }[R];
+  let c = { off: 'muted', connecting: 'warn', trading: 'up', viewing: 'info', error: 'down' }[R];
+  if (h && h.level !== 'up' && (R === 'viewing' || R === 'trading')) { txt += h.level === 'down' ? ' · CLOUD FAILING' : ' · CLOUD QUIET'; c = h.level; }
+  const title = R === 'viewing' ? `Trading runs on ${lockName(L)}. Click to open Sync and take over.` : R === 'error' ? status.err : h ? h.text : 'Sync across computers';
+  return `<button id="sSync" class="sync-chip ${c}" title="${esc(title)}"><i></i>${esc(txt)}</button>`;
+}
+function cloudCard() {
+  if (!sync.on) return '';
+  const C = state.cloud, h = cloudHealth(), runs = cloudRuns.runs ?? [];
+  const ev = e => ({ workflow_dispatch: 'timer', schedule: 'GitHub schedule' })[e] ?? e;
+  return `<div class="card edge-${h?.level ?? 'muted'}"><h3>Cloud trader <span class="right ${h?.level ?? 'muted'}">${h ? esc(h.text) : cloudRuns.err ? `can't read its runs (${esc(cloudRuns.err)})` : 'checking…'}</span></h3>
+    <p class="muted">${C ? `Last time it traded: run ${esc(C.run ?? '—')} · ${ago(C.t)} ago · ${((C.ms ?? 0) / 1000).toFixed(0)} s · PMR ${money(C.equity)}, ${C.open} open, ${C.pending} pending, ${C.trades} trades${C.smc ? ` · SMC ${C.smc.equity == null ? '—' : money(C.smc.equity)}, ${C.smc.open} open, ${C.smc.trades} trades${C.smc.error ? ` · SMC error: ${esc(C.smc.error)}` : ''}` : ''}` : 'It has not traded this account yet.'}</p>
+    <ul class="runs">${runs.map(r => `<li><span class="${r.status !== 'completed' ? 'warn' : r.result === 'success' ? 'up' : 'down'}">●</span> #${r.n} · ${ev(r.event)} · ${ago(r.t)} ago · ${r.status !== 'completed' ? esc(r.status) : esc(r.result)} <a href="${esc(r.url)}" target="_blank" rel="noopener">log</a></li>`).join('')}</ul>
+    <p class="muted">While a browser trades, cloud runs only check in and stand by. A red run usually means the <code>DATA_TOKEN</code> secret expired; no runs for 20 min means the cron-job.org timer stopped.</p></div>`;
+}
+function syncPanel() {
+  const R = status.role, L = status.lock ?? state.lastCycle;
+  const [msg, cls] = {
+    off: ['Off. This browser keeps its own local paper account.', 'muted'],
+    connecting: ['Connecting…', 'warn'],
+    trading: [`Trading on this ${sync.name}. Every cycle (each 60 s) is saved to the data repo; the cloud stands by.`, 'up'],
+    viewing: [`Viewing the shared account. ${lockName(L).replace(/^./, c => c.toUpperCase())} trades (last cycle ${L ? `${ago(L.t)} ago` : '—'}). Refreshes every 60 s.`, 'info'],
+    error: [`Can't reach the data repo: ${status.err}`, 'down'],
+  }[R];
+  const f = (k, label, extra = '') => `<label>${label}<input data-sync-field="${k}" ${extra} value="${esc(draft[k] ?? (k === 'token' ? '' : sync[k]))}"></label>`;
+  return `<h2>Sync across computers</h2>
+    <div class="card edge-${cls} status"><b class="${cls}">${esc(msg)}</b>
+      <span class="acts">${R === 'viewing' ? '<button data-sync="take">Take over trading here</button>' : ''}${R === 'trading' ? '<button data-sync="cloud">Hand trading back to the cloud</button>' : ''}${sync.on ? '<button data-sync="now" class="ghost">Sync now</button><button data-sync="off" class="ghost">Turn sync off</button>' : ''}</span></div>
+    ${cloudCard()}
+    <div class="grid2"><div class="card"><h3>Connect this browser</h3><div class="grid one">
+      ${f('repo', 'Private data repo (owner/name)', 'placeholder="fredyu1996/aster-desk-data"')}${f('branch', 'Branch', 'placeholder="stocks-state"')}
+      ${f('token', 'GitHub token (stays in this browser only)', `type="password" autocomplete="off" placeholder="${sync.token ? '•••••••• saved. Leave blank to keep' : 'github_pat_…'}"`)}
+      ${f('name', 'Name for this computer', 'maxlength="24"')}</div>
+      <p><button data-sync="connect">${sync.on ? 'Save & reconnect' : 'Connect'}</button>${sync.token ? ' <button data-sync="forget" class="ghost">Forget the token</button>' : ''}</p>
+      ${R === 'error' ? `<p class="down"><b>${esc(status.err)}</b></p>` : ''}
+      <p class="muted">Connecting loads the shared account here. This browser's own local paper account is kept and comes back when sync is off.</p></div>
+    <div class="card"><h3>How it works</h3><ol class="how">
+      <li>Both paper accounts (PMR and SMC), trades, your reviews, chart marks, pins / skips, rules and settings are <b>one file</b> in your private data repo (branch <b>${esc(sync.branch)}</b>).</li>
+      <li><b>The cloud trades</b> every ~5 minutes (cron-job.org starts the GitHub Actions job), even with every computer off.</li>
+      <li>Browsers are <b>windows onto the same account</b>. "Take over trading here" makes this browser run the cycles while it is open, and the cloud stands by. "Hand trading back to the cloud" undoes it; so does closing the page (the cloud takes over after 5 min).</li>
+      <li>If the cloud goes quiet for 30 minutes, an open browser takes over by itself.</li>
+      <li>The token is kept only in this browser's storage, never in the page or the repo. Make it on GitHub: <b>Settings → Developer settings → Fine-grained tokens</b>, access to <b>only the data repo</b>, <b>Contents: Read and write</b>. Never paste it into chat.</li></ol></div></div>`;
+}
+function syncAction(a) {
+  document.activeElement?.blur?.();
+  const local = () => { state = normalize(LS.get('asd_state', null)); status.role = 'off'; status.err = ''; status.lock = null; render(); refresh(); };
+  if (a === 'connect') {
+    const repo = String(draft.repo ?? sync.repo).trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+    const token = String(draft.token ?? '').trim() || sync.token;
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { status.role = 'error'; status.err = 'The repo should look like owner/name.'; return render(); }
+    if (!token) { status.role = 'error'; status.err = 'Paste a token first.'; return render(); }
+    sync = { ...sync, repo, token, on: true, branch: String(draft.branch ?? sync.branch).trim() || 'stocks-state', name: String(draft.name ?? sync.name).trim().slice(0, 24) || sync.name };
+    draft = {}; LS.set('asd_sync', sync); status.role = 'connecting'; status.err = '';
+    render(); loadCloudRuns(true); return refresh();
+  }
+  if (a === 'take') { status.takeover = true; status.role = 'connecting'; render(); return refresh(); }
+  if (a === 'cloud') return handBack();
+  if (a === 'now') { loadCloudRuns(true); return refresh(); }
+  if (a === 'off') { sync = { ...sync, on: false }; LS.set('asd_sync', sync); return local(); }
+  if (a === 'forget') { sync = { ...sync, on: false, token: '' }; draft = {}; LS.set('asd_sync', sync); return local(); }
+}
+
 // ---------------- panels ----------------
 function open(id, spot) {
   panel = id;
@@ -161,11 +288,11 @@ function open(id, spot) {
 function close() { panel = null; $('#panel').hidden = true; }
 
 const tabs = [['wall', 'B Picks wall'], ['screener', '1 Screener'], ['trader', '2 Trader'], ['reviewer', '3 Reviewer'], ['intel', '4 Intel'], ['digest', '5 Digest'],
-  ['smc', '6 SMC Trader'], ['backtest', '7 Backtest'], ['settings', '⚙ Settings']];
+  ['smc', '6 SMC Trader'], ['backtest', '7 Backtest'], ['sync', '☁ Sync'], ['settings', '⚙ Settings']];
 function renderPanel() {
   if (document.activeElement?.closest('#panel input, #panel textarea, #panel select')) return;
   const [kind, arg] = panel.split(/:(.*)/s);
-  const body = { screener, trader, reviewer, intel, settings, smc: smcPanel, backtest: backtestPanel, digest: () => digestPanel(arg), review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
+  const body = { screener, trader, reviewer, intel, settings, sync: syncPanel, smc: smcPanel, backtest: backtestPanel, digest: () => digestPanel(arg), review: () => review(arg), chart: () => chart(arg) }[kind]?.() ?? '';
   $('#panel').innerHTML = `<nav>${tabs.map(([id, label]) => `<button data-open="${id}" class="${kind === id ? 'on' : ''}">${label}</button>`).join('')}
     <button data-close title="Esc">✕</button></nav><div class="body">${body}</div>`;
   for (const cv of $('#panel').querySelectorAll('canvas[data-chart]')) paintChart(cv);
@@ -421,24 +548,21 @@ function settings() {
     <label>SMC Trader scans<select data-cfg="smcScope">${[['watch', 'Every watched stock (minus skips)'], ['picks', 'Only the picks wall']].map(([v, l]) => `<option value="${v}" ${c.smcScope === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>3D room</h3><label>Mouse look<select data-look>${[['follow', 'Follow the mouse (no click)'], ['fast', 'Follow the mouse, faster'], ['drag', 'Only while dragging']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <p class="muted">Follow: the view turns as the mouse moves; keep the cursor at the left or right edge to keep turning. Clicks still pick desks and walls.</p>
-    <h3>Shared account (GitHub sync)</h3>
-    <p class="muted">With a token, this browser shows the cloud trader's account and saves your reviews there. The token stays in this browser only (localStorage). Use a fine-grained token with Contents read/write on the private data repo only. Never paste it into chat.</p>
-    <form id="syncform" class="grid"><label>Data repo<input name="repo" value="${esc(sync.repo)}"></label>
-    <label>Branch<input name="branch" value="${esc(sync.branch)}"></label>
-    <label>Token<input name="token" type="password" value="${esc(sync.token)}" autocomplete="off"></label>
-    <div><button type="submit">Save sync</button> <button type="button" data-unsync>Use local paper only</button></div></form>
+    <p class="muted">Esc (with nothing open) holds the view still; Esc again follows the mouse again.</p>
+    <h3>Shared account</h3><p>Sync, the cloud trader and who is trading now: <button data-open="sync">☁ Sync</button></p>
     <h3>Local paper account</h3><p><button data-reset>Reset local account to $1,000</button> <span class="muted">Only affects the browser-only account, not the shared one.</span></p>`;
 }
 
 // ---------------- events ----------------
 $('#panel').addEventListener('click', e => {
-  const el = e.target.closest('[data-open],[data-close],[data-rule],[data-reset],[data-unsync]');
+  const sy = e.target.closest('[data-sync]');
+  if (sy) return syncAction(sy.dataset.sync);
+  const el = e.target.closest('[data-open],[data-close],[data-rule],[data-reset]');
   if (!el) return;
   if (el.dataset.open === 'wall') return openWall();
   if (el.dataset.open) return open(el.dataset.open);
   if (el.hasAttribute('data-close')) return close();
   if (el.hasAttribute('data-reset')) { if (confirm('Reset the local paper account?')) { state = freshState(); LS.set('asd_state', state); render(); } return; }
-  if (el.hasAttribute('data-unsync')) { sync = { ...sync, token: '' }; LS.set('asd_sync', sync); state = normalize(LS.get('asd_state', null)); refresh(); return; }
   const key = el.dataset.key, [rule, value] = key.split(/:(.*)/s);
   if (el.dataset.rule === 'approve') mutate(s => { s.rules.active.push({ rule, ...(value ? { value } : {}) }); s.rules.decided[key] = 'approved'; });
   if (el.dataset.rule === 'reject') mutate(s => { s.rules.decided[key] = 'rejected'; });
@@ -458,10 +582,6 @@ $('#panel').addEventListener('change', e => {
 $('#panel').addEventListener('submit', e => {
   e.preventDefault();
   const f = new FormData(e.target);
-  if (e.target.id === 'syncform') {
-    sync = { repo: f.get('repo').trim(), branch: f.get('branch').trim() || 'stocks-state', token: f.get('token').trim() };
-    LS.set('asd_sync', sync); document.activeElement?.blur(); refresh(); return;
-  }
   const id = e.target.dataset.id;
   const rv = { grade: f.get('grade'), agree: !f.get('disagree'), a: f.getAll('a'), b: f.getAll('b'), comment: f.get('comment').trim(), exclude: !!f.get('exclude'), t: Date.now(), by: 'Fred' };
   document.activeElement?.blur();
@@ -469,7 +589,12 @@ $('#panel').addEventListener('submit', e => {
 });
 addEventListener('keydown', e => {
   if (wall.isOpen()) return wall.key(e);
-  if (e.target.closest('input,textarea,select')) return;
+  if (e.target.closest('input,textarea,select')) { if (e.key === 'Escape') e.target.blur(); return; }
+  // Esc closes what is open; with nothing open it holds the view still (and again to follow the mouse).
+  if (e.key === 'Escape') {
+    if (!$('#help').hidden || panel) { $('#help').hidden = true; close(); return; }
+    world.setStill(!world.still); render(); return;
+  }
   const d = DESKS.find(x => x.key === e.key);
   if (d) return open(d.id);
   if (e.key === '5') return open('digest', 'reviewer');
@@ -481,8 +606,10 @@ addEventListener('keydown', e => {
   if (k === 'r') return world.goTo('rules');
   if (k === 's' && e.altKey) return open('settings');
   if (k === 'h' || k === '?') $('#help').hidden = !$('#help').hidden;
-  if (e.key === 'Escape') { $('#help').hidden = true; close(); }
 });
+$('#hud').addEventListener('click', e => { if (e.target.closest('#sSync')) open('sync', 'smc'); });
+$('#still').addEventListener('click', () => { world.setStill(false); render(); });
+$('#panel').addEventListener('input', e => { const k = e.target.dataset.syncField; if (k) draft[k] = e.target.value; });
 $('#help').hidden = LS.get('asd_help_seen', false);
 $('#help').addEventListener('click', () => { $('#help').hidden = true; LS.set('asd_help_seen', true); });
 $('#settingsBtn').addEventListener('click', () => open('settings'));

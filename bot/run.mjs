@@ -23,8 +23,9 @@ function summary(state, ms) {
 
 async function step(prev) {
   const base = normalize(prev);
-  // A browser that took over within the last 30 minutes keeps trading; the cloud steps aside.
-  if (base.lastCycle?.by === 'browser' && now - base.lastCycle.t < 30 * 60_000 && !env.FORCE) return null;
+  // A browser that is trading (it cycles every 60 s) keeps the desk; once it has been silent for 5 min (page closed,
+  // laptop asleep) the cloud takes over. "Hand back to the cloud" (by: 'handback') lets the cloud run at once.
+  if (base.lastCycle?.by === 'browser' && now - base.lastCycle.t < 5 * 60_000 && !env.FORCE) return null;
   const market = await loadMarket(base.cfg, held(base), { now });
   // Market posture (breadth + uptrend CSVs) changes at most twice a day: refresh hourly.
   if (!(now - (base.market?.at ?? 0) < 60 * 60_000)) market.posture = await loadPosture({ at: now }).catch(e => ({ at: now, errors: [e.message] }));
