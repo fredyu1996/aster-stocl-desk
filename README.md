@@ -12,9 +12,10 @@
 | 操作 | 按鍵 |
 | --- | --- |
 | 行路 | W A S D／方向鍵，Shift 跑，滾輪向前 |
-| 望 | 唔使撳，滑鼠一郁就轉；cursor 去到左右邊會一直轉。⚙ → Mouse look 可以改成快啲，或者改返做拖住先轉 |
+| 望 | 唔使撳，滑鼠一郁就轉；cursor 去到左右邊會一直轉。冇嘢開住嘅時候撳 **Esc** 就定住鏡頭（再撳 Esc 或者撳底下個掣就郁返）；拖住照樣可以轉。⚙ → Mouse look 可以改成快啲，或者改返做拖住先轉 |
 | Desk / panel | 1 Screener · 2 Trader · 3 Reviewer · 4 Market Intel · 5 Digest · 6 SMC Trader · 7 Backtest |
 | 牆 | B 北牆 picks wall · P 東牆持倉 · V 南牆 review wall · R 西牆規則同 agent comms |
+| Sync | 頂部嗰粒 sync chip（顯示邊個喺度 trade），或者 panel 嘅 ☁ Sync |
 | 設定 | 右上 ⚙ |
 
 ## 4 個 agent
@@ -87,8 +88,9 @@ Screener 每個 cycle 揀 6 隻心水（⚙ 可改）貼上北牆：持倉中嘅
 1. 開一個 **public** repo 放呢個 desk（Pages 同 Actions 免費），data 用 private repo（預設 `fredyu1996/aster-desk-data`，branch `stocks-state`，同 Aster Desk 嘅 `state` branch 分開）。
 2. 喺 desk repo 加 secret `DATA_TOKEN`：fine-grained token，只限 data repo，Contents read/write。可以用 repo variable `DATA_REPO`、`DATA_BRANCH` 改位置。
 3. GitHub 自己嘅 `*/5` cron 唔可靠。用 cron-job.org 每 5 分鐘 call `workflow_dispatch`（token 只需 Actions read/write，會過期）。workflow 內有 `*/10` 做後備。
-4. 瀏覽器 ⚙ → Shared account 填同一個 data repo 同一個 token。之後 desk 會顯示 cloud 帳戶，review 同規則批准都寫返去 data repo。Token 只存喺嗰部瀏覽器。
-5. Cloud 靜咗 30 分鐘以上，開住嘅瀏覽器會接手交易；最後一次瀏覽器 cycle 之後 30 分鐘，cloud 先會接返。
+4. 瀏覽器撳頂部嘅 sync chip（或者 ☁ Sync）→ Connect this browser，填 data repo、branch、token 同呢部機個名。之後 desk 會顯示共用帳戶，review、標記、規則批准都寫返去 data repo。Token 只存喺嗰部瀏覽器。
+5. 同 crypto desk 一樣：平時 cloud trade，瀏覽器係睇（VIEWING · CLOUD TRADES）。撳「Take over trading here」就由呢部機 trade（每 60 秒一個 cycle），cloud 讓位；「Hand trading back to the cloud」就交返。閂咗網頁 5 分鐘，cloud 自動接返。Cloud 靜咗 30 分鐘，開住嘅瀏覽器自動接手。
+6. ☁ Sync 嘅 Cloud trader 卡會讀呢個 public repo 最近幾次 `cloud-trader` run（唔使 token）：紅色通常係 `DATA_TOKEN` 過期，20 分鐘冇 run 通常係 cron-job.org 停咗。
 
 每次儲存係一個冇 parent 嘅 commit，force-update branch，所以 data repo 唔會越積越大。寫之前會重讀 ref，有衝突就重做。
 
