@@ -8,6 +8,7 @@ Walkable 3D paper-trading desk for Aster DEX stock perpetuals with two paper tra
 - Lead with the answer: what changed, what he will see, what is still open. Give numbers with their sample size.
 - **Paper only.** Never place real orders, never hold his keys. He must not paste tokens into chat. Tokens live only in the `DATA_TOKEN` repo secret, each browser's Sync panel (localStorage `asd_sync`) and his cron-job.org job.
 - Evidence over enthusiasm. Say when a sample is too small. Reviewer rules are proposals until he approves them. Ask before changing a strategy when the evidence is thin.
+- Work on a branch and open a PR. Merge only when he says "merge".
 
 ## Run and verify
 
@@ -57,6 +58,13 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 7. Fred's chart marks (`state.marks[symbol]`, FVG / OB / MSS / liquidity / HH HL LH LL, times are chart-bar open times). Fred chose (2026-11-23) "veto + record": `markCheck` declines a proposal when his latest hand-drawn MSS (by bar time, at or before the signal) points the other way, or the entry sits inside one of his opposite-direction FVG / OB; a same-direction FVG / OB overlapping the 15m POI or 5m entry FVG is recorded as `plan.marks.confluence` (feature `marks`, rule `marksConfluenceOnly` only after his approval). Auto marks and marks placed after the signal bar never count. Marks never size a trade. Order of checks: trading off → not in picks → marks veto → `preTrade`. Chart-wall candles (`chartBars`) are display only; trading stays on completed 1m bars.
 8. Market posture (`state.market`, refreshed at most hourly by whoever runs the cycle), the postmortem (`decision.post`) and the digest / coach are record and display only. They never gate, size or cancel a trade. Each proposal stores `plan.market` (exposure recommendation, ceiling, zones) and each trade `marketAtExit`, `mae`, `mfe` (R of planned risk per unit).
 9. SMC Trader (Fred, 2026-11-24: runs in this desk, small-cap SMC Trader settings, backtest top 10 × 180 d): `vendor/smc-core.js` is never edited here; to update it, copy aster-desk's built `bot/core.js` and re-read `sm.cfg` / `rv.smAdj` into `core/smc-config.mjs`. It trades `cfg.smcScope` (Fred, 2026-11-25: default `watch` = the universe watch list minus skips; `picks` = picks only) plus held symbols, steps at each 5m close (catch-up ticks at most the last 12 steps, walks up to 24 h of candles), fills at the 5m close + slippage, and rides on the same cycle and lock as the PMR Trader. `cfg.on` off or `state.smc.on === false` blocks its entries; Fred's hand-drawn marks veto its entries via `markCheck` (zone = its entry zone). Its R is aster-desk's (realized P&L / risk at entry). A failure is stored in `state.smc.error` and never blocks the PMR cycle. The Reviewer does not learn from it, and it has no postmortem.
+
+## Where we left off (2026-11-25)
+
+- Main is at PR #6 (Esc holds the view; ☁ Sync like the crypto desk). Everything from the claude.ai sessions is merged; no open branches with unmerged work.
+- Cloud trader: the cron-job.org timer (every 5 min, `workflow_dispatch` on `cloud-trader.yml`) works. `DATA_TOKEN` was replaced on 2026-11-25 after a 401. Fred regenerated tokens that day, so ask whether the crypto desk (`aster-desk`) Actions / cron still run green.
+- Each browser should set its computer name in ☁ Sync (Save & reconnect, token left blank).
+- PMR: waiting on Fred. Either keep watching the nightly variants table (7 Backtest), or test a stop / target variant next (e.g. a tighter stop). Do not set `cfg.pmr` without his approval.
 
 ## Open items
 
