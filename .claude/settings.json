@@ -27,7 +27,7 @@
     "fred-plugins": {
       "source": {
         "source": "github",
-        "repo": "fredyu1996/claude-setup"
+        "repo": "fredyu1996/claude_setup"
       }
     }
   },
