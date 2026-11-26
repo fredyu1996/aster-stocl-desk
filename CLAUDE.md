@@ -84,7 +84,7 @@ Pick the matching skill before starting, say which one in the reply. Fred's own 
 - After merge, the cloud picks up `loose-2.5R` on its next run (saved account has no `pmrPreset` yet). Watch the PMR trade count: the 180-day study expects roughly 14 trades in 6 months, so weeks with none are normal.
 - The 2026-11-25 nightly report predates `variants`; the next nightly run fills the variants table.
 - Main is at PR #8 (plugins from `claude_setup`). Everything earlier is merged.
-- Cloud trader: the cron-job.org timer (every 5 min, `workflow_dispatch` on `cloud-trader.yml`) works. `DATA_TOKEN` was replaced on 2026-11-25 after a 401. Fred regenerated tokens that day, so ask whether the crypto desk (`aster-desk`) Actions / cron still run green.
+- Cloud trader: the cron-job.org timer (every 5 min, `workflow_dispatch` on `cloud-trader.yml`) works. `DATA_TOKEN` was replaced on 2026-11-25 after a 401. Fred confirmed on 2026-11-26 that the crypto desk (`aster-desk`) Actions / cron still run green after the token change.
 - Each browser should set its computer name in ☁ Sync (Save & reconnect, token left blank).
 - PMR: the loosened preset is a paper experiment (n 14 in the study). Next steps only on Fred's say: keep watching live + nightly variants, or test a stop variant (e.g. a tighter stop).
 
