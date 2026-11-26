@@ -27,7 +27,7 @@
     "fred-plugins": {
       "source": {
         "source": "github",
-        "repo": "fredyu1996/aster-stocl-desk"
+        "repo": "fredyu1996/claude-setup"
       }
     }
   },
@@ -37,7 +37,8 @@
     "frontend-design@claude-plugins-official": true,
     "claude-mem@thedotmack": true,
     "ponytail@ponytail": true,
-    "agent-skills@fred-plugins": true
+    "agent-skills@fred-plugins": true,
+    "fred-design@fred-plugins": true
   },
   "model": "opus",
   "effortLevel": "high",
@@ -53,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "codegraph prompt-hook"
+            "command": "command -v codegraph >/dev/null 2>&1 && codegraph prompt-hook || true"
           }
         ]
       }
