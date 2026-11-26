@@ -32,7 +32,7 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 
 | File | Responsibility |
 | --- | --- |
-| `core/pmr.mjs` | GMS PMR v1.4 `Scanner` (ported from Market Floor `public/market.mjs`, perpetual path only), taker-flow / volume `intel`. Timing / thresholds / `targetR` in `PMR_DEFAULT` (= v1.4), overridden by `cfg.pmr` (default `{}`). |
+| `core/pmr.mjs` | GMS PMR v1.4 `Scanner` (ported from Market Floor `public/market.mjs`, perpetual path only), taker-flow / volume `intel`. Timing / thresholds / `targetR` in `PMR_DEFAULT` (= v1.4), overridden by `cfg.pmr`. `PMR_PRESETS` (`v1.4`, `loose-2.5R` = live default, `loose`) set `cfg.pmr` + `cfg.minNetRR` together via `applyPmrPreset` (core/desk.mjs); Settings → PMR 策略版本. |
 | `core/aster.mjs` | Aster REST (`fapi.asterdex.com`), stock-perp universe (`underlyingSubType` contains `STOCK`, not `pre-launch`), 1m bars (6,000 = 100 h), book, funding. |
 | `core/reviewer.mjs` | Net R:R economics, `preTrade` gate and sizing, `grade` A–F, `learn` rule proposals from trades and Fred's reviews. |
 | `core/desk.mjs` | State schema, paper fills / stops / targets / time exits on 1m bars, one `cycle` shared by browser and cloud. `choosePicks` (the north-wall shortlist). |
@@ -43,9 +43,10 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 | `bot/backtest.mjs`, `.github/workflows/backtest.yml` | Nightly report of both traders on today's top 10 stock perps × 180 d (plus `PMR_VARIANTS`: report-only PMR loosenings with funnel counts) → branch `backtest-report` of this repo (`stock-backtest.json`, read by the 7 Backtest panel from raw.githubusercontent.com). |
 | `core/github.mjs` | State on the private data repo: parentless commit per save, force-updated, re-read ref before write, `update` retries. |
 | `bot/run.mjs` | Cloud cycle (GitHub Actions `cloud-trader.yml`). `STATE_IN`/`STATE_OUT` for local files. |
-| `ui/scene.mjs` | three.js room: five desks (6 = SMC Trader), figures, four wall screens (north = picks, east = both traders' positions), walking, mouse-look (follow / fast / drag, `asd_look`; Esc with nothing open holds the view still) and picking. |
+| `ui/scene.mjs` | three.js room: five desks (6 = SMC Trader), figures, four wall screens (north = picks, east = both traders' positions), walking, mouse-look and picking. Look = heading (`baseYaw` / `basePitch`) + an offset from the cursor's position on screen (±0.55 rad follow, ±0.95 fast, eased), so the cursor in the middle always looks straight ahead (Fred, 2026-11-26: the old relative follow lost the centre when the cursor ran off-screen). Outer 8 % turns the heading, drag turns the heading, C levels the view, Esc with nothing open freezes it; `#reticle` marks the centre. `asd_look`: follow / fast / drag. |
 | `ui/wall.mjs` | Picks wall overlay: interactive charts from Aster klines (zoom, pan, 1m–1d, older history on demand), Fred's mark tools, auto FVG / swings, PMR + Trader level layer, pin / skip. |
 | `.claude/settings.json`, `.mcp.json` | Fred's portable Claude Code setup (dev tooling only, not loaded by the desk): marketplaces + `enabledPlugins`, model / effort, codegraph prompt hook (skipped where codegraph is not installed), MCP servers (perplexity-docs, playwright, codegraph). His own plugins (`agent-skills` fork, `fred-design` skills) live in the **private** repo `fredyu1996/claude_setup` (`fred-plugins` marketplace), so third-party skills are not republished here. |
+| `ui/zh.mjs` | 中文 labels (Fred, 2026-11-26: the whole desk in Chinese). Core keeps English codes (statuses, decline reasons, exit reasons, verdicts); the UI translates them here. Trading terms (OB, FVG, MSS, POI, R, long / short, stop, target) stay English. New UI text is written in Cantonese (Traditional) directly. |
 | `ui/app.mjs`, `ui/charts.mjs`, `ui/styles.css` | Data loop, panels, review form, settings, canvas charts. ☁ Sync panel + HUD sync chip (modelled on aster-desk `src/sync.js`): role, take over / hand back, cloud-trader card from the public Actions runs API (no token), connect form (`asd_sync`: repo, branch, token, name, dev, on). |
 
 ## Invariants
@@ -60,19 +61,39 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 8. Market posture (`state.market`, refreshed at most hourly by whoever runs the cycle), the postmortem (`decision.post`) and the digest / coach are record and display only. They never gate, size or cancel a trade. Each proposal stores `plan.market` (exposure recommendation, ceiling, zones) and each trade `marketAtExit`, `mae`, `mfe` (R of planned risk per unit).
 9. SMC Trader (Fred, 2026-11-24: runs in this desk, small-cap SMC Trader settings, backtest top 10 × 180 d): `vendor/smc-core.js` is never edited here; to update it, copy aster-desk's built `bot/core.js` and re-read `sm.cfg` / `rv.smAdj` into `core/smc-config.mjs`. It trades `cfg.smcScope` (Fred, 2026-11-25: default `watch` = the universe watch list minus skips; `picks` = picks only) plus held symbols, steps at each 5m close (catch-up ticks at most the last 12 steps, walks up to 24 h of candles), fills at the 5m close + slippage, and rides on the same cycle and lock as the PMR Trader. `cfg.on` off or `state.smc.on === false` blocks its entries; Fred's hand-drawn marks veto its entries via `markCheck` (zone = its entry zone). Its R is aster-desk's (realized P&L / risk at entry). A failure is stored in `state.smc.error` and never blocks the PMR cycle. The Reviewer does not learn from it, and it has no postmortem.
 
-## Where we left off (2026-11-25)
+10. PMR presets (Fred, 2026-11-26: 「放寬條件」, with a switch, trade the loosened version now): live default `loose-2.5R` = windows ×2 (POI wait 60, retest 240, MSS 90, FVG 15→30, entry window 120 min), displacement 0.8 ATR, POI distance 1.0 ATR, fixed 2.5R target, net R:R ≥ 1.5. `normalize` moves a saved account without `cfg.pmrPreset` onto the default once; after that Fred's choice stands. Do not add or change presets without his approval. Invariant 1's numbers describe `v1.4`.
 
-- Main is at PR #6 (Esc holds the view; ☁ Sync like the crypto desk). Everything from the claude.ai sessions is merged; no open branches with unmerged work.
-- Cloud trader: the cron-job.org timer (every 5 min, `workflow_dispatch` on `cloud-trader.yml`) works. `DATA_TOKEN` was replaced on 2026-11-25 after a 401. Fred regenerated tokens that day, so ask whether the crypto desk (`aster-desk`) Actions / cron still run green.
+## Skills to use (Fred, 2026-11-26: 根據 prompt 用返相應嘅 skills / plugins)
+
+Pick the matching skill before starting, say which one in the reply. Fred's own plugins come from the private repo `fredyu1996/claude_setup` (`fred-plugins`); in a cloud session attach it (`add_repo`) and read the skill's `SKILL.md` under `/home/user/claude_setup/plugins/<plugin>/skills/<name>/` if it is not loaded as a plugin.
+
+| Prompt is about | Skill |
+| --- | --- |
+| UI look, panels, layout, copy, i18n, polish | `fred-design:impeccable` (harden → i18n, clarify → copy), `frontend-design:frontend-design` for a new look |
+| 3D room feel, mouse / camera, motion, interactions | `fred-design:emil-design-eng` (springs, easing, interruptible motion) |
+| A change across several files | `agent-skills:incremental-implementation` (thin slices, test after each) |
+| Strategy / account / risk change, thin evidence | `agent-skills:doubt-driven-development` before proposing; run tests + a real cycle after |
+| Workflows, cron, Actions | `agent-skills:ci-cd-and-automation` |
+| Recording a decision Fred made | `agent-skills:documentation-and-adrs` (here: Invariants + this file) |
+| Market posture, breadth, trade review, postmortem, weekly digest | the vendored `.claude/skills/` (exposure-coach, market-breadth-analyzer, uptrend-analyzer, signal-postmortem, trade-performance-coach, weekly-performance-digest) |
+| Charts / dashboards in an artifact | `dataviz` |
+
+## Where we left off (2026-11-26)
+
+- Branch `claude/stoic-babbage-nsyau2`: the desk is in Chinese (`ui/zh.mjs`), mouse look recentres (absolute follow + reticle + C), PMR runs `loose-2.5R` with a Settings switch back to v1.4. Tests 35/35, a real cycle ran with the new preset (0 proposals that cycle), 7-day × 3 backtest ran (PMR 0 trades, SMC n 6). Waiting for Fred's review / "merge".
+- After merge, the cloud picks up `loose-2.5R` on its next run (saved account has no `pmrPreset` yet). Watch the PMR trade count: the 180-day study expects roughly 14 trades in 6 months, so weeks with none are normal.
+- The 2026-11-25 nightly report predates `variants`; the next nightly run fills the variants table.
+- Main is at PR #8 (plugins from `claude_setup`). Everything earlier is merged.
+- Cloud trader: the cron-job.org timer (every 5 min, `workflow_dispatch` on `cloud-trader.yml`) works. `DATA_TOKEN` was replaced on 2026-11-25 after a 401. Fred confirmed on 2026-11-26 that the crypto desk (`aster-desk`) Actions / cron still run green after the token change.
 - Each browser should set its computer name in ☁ Sync (Save & reconnect, token left blank).
-- PMR: waiting on Fred. Either keep watching the nightly variants table (7 Backtest), or test a stop / target variant next (e.g. a tighter stop). Do not set `cfg.pmr` without his approval.
+- PMR: the loosened preset is a paper experiment (n 14 in the study). Next steps only on Fred's say: keep watching live + nightly variants, or test a stop variant (e.g. a tighter stop).
 
 ## Open items
 
-- PMR v1.4 as written rarely completes an entry. 2026-11-25 study (top 10 × 180 d): 668 1H breakouts → 284 POI → 171 retests → 15 MSS → 3 proposals, all declined NET_RR (the measured-move target is mostly spent by entry). Loosening windows / displacement / R:R alone: 0 trades. Loosened + fixed 2.5R target: n 14, −0.7R, halves −2.8R (n 8) / +2.1R (n 6) — too small and inconsistent. `cfg.pmr` stays `{}` until Fred approves a variant.
+- PMR v1.4 as written rarely completes an entry. 2026-11-25 study (top 10 × 180 d): 668 1H breakouts → 284 POI → 171 retests → 15 MSS → 3 proposals, all declined NET_RR (the measured-move target is mostly spent by entry). Loosening windows / displacement / R:R alone: 0 trades. Loosened + fixed 2.5R target: n 14, −0.7R, halves −2.8R (n 8) / +2.1R (n 6) — too small and inconsistent. Fred switched live paper to it on 2026-11-26 (preset `loose-2.5R`, switch in Settings).
 - Needs a public GitHub repo for Pages + Actions, the `DATA_TOKEN` secret, and a cron-job.org timer. Data goes to `fredyu1996/aster-desk-data` branch `stocks-state` unless `DATA_REPO` / `DATA_BRANCH` say otherwise.
 - No live executor yet (Fred chose "paper first, keep live"). Market Floor's `binance-execution.mjs` is the reference if he asks for one; Aster's v1 futures API is Binance-style HMAC.
-- No backtester panel and no news feed yet.
+- No news feed yet.
 - Marks veto has no expiry: an old opposite FVG / OB keeps vetoing until Fred erases it. Ask before adding mitigation / age rules.
 - Manual paper orders from the Picks wall are not built.
 - SMC config is a snapshot (2026-11-24). When Fred changes the crypto SMC Trader or its Reviewer rules, ask whether the stock SMC Trader should follow.

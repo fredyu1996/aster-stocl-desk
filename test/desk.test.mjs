@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { choosePicks, cycle, freshState, normalize, persistable } from '../core/desk.mjs';
+import { DEFAULT_CFG, applyPmrPreset, choosePicks, cycle, freshState, normalize, persistable } from '../core/desk.mjs';
+import { PMR_PRESETS } from '../core/pmr.mjs';
 import { MIN, Scanner } from '../core/pmr.mjs';
 import { economics, features, latestMss, learn, markCheck, preTrade } from '../core/reviewer.mjs';
 import { chartBars, pickUniverse } from '../core/aster.mjs';
@@ -322,7 +323,7 @@ test('a declined proposal gets a counterfactual once its window is over, grouped
   const rep = filterReport(s2.decisions);
   assert.equal(rep[0].filter, 'Your MSS mark');
   assert.equal(rep[0].missed, 1);
-  assert.match(rep[0].verdict, /sample too small/);
+  assert.match(rep[0].verdict, /樣本太細/);
 });
 
 const tr = (i, pnl, r, o = {}) => ({ id: `t${i}`, symbol: 'NVDAUSDT', direction: 1, pnl, r, reason: r > 0 ? 'Target' : 'Stop',
@@ -351,8 +352,24 @@ test('coach: findings cite evidence, verdict ladder, no breach claimed where no 
   assert.equal(c.verdict, 'REVIEW_REQUIRED');
   assert.ok(c.findings.some(f => f.severity === 'critical' && /1.60R/.test(f.text)));
   assert.ok(c.findings.some(f => f.axis === 'execution' && /30 min/.test(f.text)));
-  assert.ok(c.findings.some(f => f.axis === 'regime' && /not a rule breach/.test(f.text)));
-  assert.ok(c.findings.some(f => /3 losses in a row.*unclear/.test(f.text)));
+  assert.ok(c.findings.some(f => f.axis === 'regime' && /唔算犯規/.test(f.text)));
+  assert.ok(c.findings.some(f => /連蝕 3 單.*未清楚/.test(f.text)));
   assert.deepEqual(c.rootCauses, { risk_sizing: 1, execution: 1, market_environment: 1 });
   assert.equal(coach([tr(0, 20, 2)], { reviews: { t0: { agree: true } } }).verdict, 'OK');
+});
+
+test('PMR presets: fresh accounts and accounts saved before presets run loose-2.5R; v1.4 stays selectable', () => {
+  assert.equal(freshState().cfg.pmrPreset, 'loose-2.5R');
+  assert.deepEqual(freshState().cfg.pmr, PMR_PRESETS['loose-2.5R'].pmr);
+  assert.equal(freshState().cfg.minNetRR, 1.5);
+  const old = normalize({ cfg: { ...DEFAULT_CFG, pmrPreset: undefined, pmr: {}, minNetRR: 2, riskPct: 0.5 } });
+  assert.equal(old.cfg.pmrPreset, 'loose-2.5R');
+  assert.equal(old.cfg.pmr.targetR, 2.5);
+  assert.equal(old.cfg.minNetRR, 1.5);
+  assert.equal(old.cfg.riskPct, 0.5);
+  const back = normalize({ cfg: applyPmrPreset({ ...old.cfg }, 'v1.4') });
+  assert.equal(back.cfg.pmrPreset, 'v1.4');
+  assert.deepEqual(back.cfg.pmr, {});
+  assert.equal(back.cfg.minNetRR, 2);
+  assert.equal(applyPmrPreset({ pmrPreset: 'v1.4' }, 'nope').pmrPreset, 'v1.4');
 });

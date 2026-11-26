@@ -4,12 +4,13 @@
 // Chart candles come from Aster klines for display only. The scanner and paper fills keep using completed 1m bars.
 import { chartBars } from '../core/aster.mjs';
 import { latestMss } from '../core/reviewer.mjs';
-import { C, fmt, pct, statusColor } from './charts.mjs';
+import { C, FONT, fmt, pct, statusColor } from './charts.mjs';
+import * as zh from './zh.mjs';
 
 const TFS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const SPAN = { '1m': 6e4, '5m': 3e5, '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5 };
-const TOOLS = [['cursor', 'Cursor', 'V'], ['fvg', 'FVG', 'F'], ['ob', 'OB', 'O'], ['mss', 'MSS', 'M'], ['liq', 'Liquidity', 'L'],
-  ['HH', 'HH', '1'], ['HL', 'HL', '2'], ['LH', 'LH', '3'], ['LL', 'LL', '4'], ['erase', 'Erase', 'E']];
+const TOOLS = [['cursor', '游標', 'V'], ['fvg', 'FVG', 'F'], ['ob', 'OB', 'O'], ['mss', 'MSS', 'M'], ['liq', 'Liquidity', 'L'],
+  ['HH', 'HH', '1'], ['HL', 'HL', '2'], ['LH', 'LH', '3'], ['LL', 'LL', '4'], ['erase', '擦走', 'E']];
 const HINT = {
   cursor: '拖動平移 · 滾輪縮放 · Shift + 滾輪左右移 · 雙擊重設 · 拖到最左會自動載入更早嘅 K 線',
   fvg: 'FVG：拖一個框，會吸附 K 線開收高低。B 轉 Bull / Bear。入場價落喺你反方向嘅 FVG/OB 入面，Trader 唔會做。',
@@ -20,7 +21,6 @@ const HINT = {
 };
 const DRAG = new Set(['fvg', 'ob', 'mss']), TAGS = new Set(['HH', 'HL', 'LH', 'LL']);
 const AX = 70, BX = 22, MAX_BARS = 4000, MAX_MARKS = 120;
-const FONT = 'Inter, system-ui, sans-serif';
 const UP = C.up, DOWN = C.down, LIQ = '#fbbf24';
 const WHY = { held: '持倉中', pinned: '★ 你 pin 咗', smc: 'SMC setup', setup: 'PMR setup', volume: '成交額' };
 
@@ -142,14 +142,14 @@ class Chart {
     if (!this.wall.layerOn()) return { zones: [], lines: [] };
     const s = this.wall.api.scan()[this.sym], st = this.wall.api.state(), zones = [], lines = [];
     if (s?.anchor) {
-      lines.push({ price: s.anchor.boundary, color: C.boundary, label: `PMR ${s.anchor.type.replaceAll('_', ' ')} ${s.anchor.direction === 1 ? '↑' : '↓'}`, from: s.anchor.t - 36e5, dash: [6, 4] });
+      lines.push({ price: s.anchor.boundary, color: C.boundary, label: `PMR ${zh.pat(s.anchor.type)} ${s.anchor.direction === 1 ? '↑' : '↓'}`, from: s.anchor.t - 36e5, dash: [6, 4] });
       lines.push({ price: s.anchor.target, color: C.target, label: 'PMR 1H target', from: s.anchor.t, dash: [2, 4] });
     }
     if (s?.poi) zones.push({ lo: s.poi.lo, hi: s.poi.hi, from: s.poi.knownAt - 9e5, label: `PMR 15m ${s.poi.type}` });
     const live = [...st.positions, ...st.orders].find(x => x.symbol === this.sym) ?? s?.plan;
     if (live) {
       const from = live.entryAt ?? live.plan?.signalAt ?? live.signalAt;
-      lines.push({ price: live.entry, color: C.entry, label: live.entryAt ? 'Trader entry' : 'Trader limit', from, dash: [] },
+      lines.push({ price: live.entry, color: C.entry, label: live.entryAt ? 'Trader 入場' : 'Trader 掛單', from, dash: [] },
         { price: live.stop, color: C.stop, label: 'SL', from, dash: [] }, { price: live.target, color: C.target, label: 'TP', from, dash: [] });
     }
     return { zones, lines };
@@ -243,7 +243,7 @@ class Chart {
       c.fillStyle = '#334155'; c.fillRect(hx - tw / 2, ch + 1, tw, BX - 2); c.fillStyle = '#e2e8f0'; c.textAlign = 'center'; c.fillText(tl, hx, ch + BX / 2);
     }
     const k = b[hi];
-    this.hud.textContent = `${this.tf}  O ${fmt(k.o)}  H ${fmt(k.h)}  L ${fmt(k.l)}  C ${fmt(k.c)}${k.closed === false ? '  (forming)' : ''}`;
+    this.hud.textContent = `${this.tf}  O ${fmt(k.o)}  H ${fmt(k.h)}  L ${fmt(k.l)}  C ${fmt(k.c)}${k.closed === false ? '  （未收）' : ''}`;
   }
   drawMark(m, al) {
     const c = this.ctx, cw = this.cw, col = m.dir === 'bear' ? DOWN : UP, ga = al * (m.auto ? 0.55 : 1);
@@ -393,18 +393,18 @@ export function createChartWall(root, api) {
   let open = false, tool = 'cursor', dir = 'bull', layerOn = LS.get('asd_wall_layer', true), active = null, built = '', timer = 0, hintT = 0;
   const charts = {}, hist = {}, tfs = LS.get('asd_wall_tf', {});
   root.innerHTML = `
-    <div class="cw-top"><h2>Picks wall</h2><span class="muted" data-sub></span><button data-close title="Esc">✕ 返去 desk</button></div>
-    <div class="cw-tools" role="toolbar" aria-label="Chart tools">
+    <div class="cw-top"><h2>心水牆</h2><span class="muted" data-sub></span><button data-close title="Esc">✕ 返去 desk</button></div>
+    <div class="cw-tools" role="toolbar" aria-label="畫圖工具">
       ${TOOLS.map(([k, l, s]) => `<button data-tool="${k}" aria-pressed="false">${l}<kbd>${s}</kbd></button>`).join('')}
       <span class="sep"></span><button data-dir="bull" class="on" aria-pressed="true">Bull<kbd>B</kbd></button><button data-dir="bear" class="bear" aria-pressed="false">Bear</button>
-      <span class="sep"></span><button data-do="auto" title="Visible range of the selected chart">Auto FVG / swings<kbd>A</kbd></button>
-      <button data-do="layer" aria-pressed="false">PMR + Trader levels<kbd>G</kbd></button>
-      <button data-do="in" title="Zoom in">＋</button><button data-do="out" title="Zoom out">－</button>
-      <button data-do="undo">Undo<kbd>Ctrl Z</kbd></button><button data-do="clear">Clear this chart</button>
+      <span class="sep"></span><button data-do="auto" title="揀咗嗰個 chart 而家睇到嘅範圍">自動 FVG / swings<kbd>A</kbd></button>
+      <button data-do="layer" aria-pressed="false">PMR + Trader 價位<kbd>G</kbd></button>
+      <button data-do="in" title="放大">＋</button><button data-do="out" title="縮細">－</button>
+      <button data-do="undo">復原<kbd>Ctrl Z</kbd></button><button data-do="clear">清走呢個 chart</button>
     </div>
     <p class="cw-hint" aria-live="polite"></p>
-    <section class="cw-grid" aria-label="Picks"></section>
-    <aside class="cw-rail" aria-label="Trader"></aside>`;
+    <section class="cw-grid" aria-label="心水"></section>
+    <aside class="cw-rail" aria-label="Trader 範圍"></aside>`;
   const $ = s => root.querySelector(s);
   const grid = $('.cw-grid'), rail = $('.cw-rail'), hintEl = $('.cw-hint');
 
@@ -439,18 +439,18 @@ export function createChartWall(root, api) {
     if (ord) return [`Trader 掛 ${ord.direction === 1 ? 'buy' : 'sell'} limit @ ${fmt(ord.entry)}`, 'warn'];
     if (st.skips.includes(sym)) return ['你剔走咗：Trader 唔會做', 'muted'];
     const d = (st.decisions ?? []).find(x => x.symbol === sym && Date.now() - x.t < 6 * 36e5);
-    if (d) return [`Reviewer ${d.status === 'Approved' ? '批准' : d.status === 'Declined' ? '拒絕' : d.status}：${String(d.reason).replaceAll('_', ' ')}`, d.status === 'Approved' ? 'up' : 'warn'];
+    if (d) return [`Reviewer ${zh.dec(d.status)}：${zh.rsn(d.reason)}`, d.status === 'Approved' ? 'up' : 'warn'];
     if (s?.status === 'QUALIFIED') return ['PMR 出咗 proposal，交 Reviewer 核', 'warn'];
     const mss = latestMss(marksOf(sym));
     if (mss) return [`等 PMR setup · 你最新 ${mss.dir === 'bull' ? 'Bull' : 'Bear'} MSS → Trader 只做 ${mss.dir === 'bull' ? 'long' : 'short'}`, mss.dir === 'bull' ? 'up' : 'down'];
     const sc = (st.smc?.scan?.cands ?? []).find(c => `${c.b}USDT` === sym);
-    if (sc) return [`SMC：${sc.side === 'L' ? 'long' : 'short'} ${sc.tf} ${sc.zone} · ${sc.took ? '入咗' : sc.skip}`, sc.took ? 'up' : 'muted'];
+    if (sc) return [`SMC：${sc.side === 'L' ? 'long' : 'short'} ${sc.tf} ${sc.zone} · ${sc.took ? '入咗' : zh.rsn(sc.skip)}`, sc.took ? 'up' : 'muted'];
     return ['等 PMR / SMC setup 完成先會落單', 'muted'];
   }
   function tileHTML(sym) {
     return `<article class="cw-tile" data-sym="${esc(sym)}">
       <div class="cw-th"><b class="cw-sym">${esc(short(sym))}</b><span class="cw-px"></span><span class="cw-chg"></span><span class="cw-stage"></span>
-        <div class="cw-acts"><button data-pin title="Pin: always on the wall">★ Pin</button><button data-skip title="Skip: the Trader won't trade it">Skip</button><button data-big>Expand</button></div></div>
+        <div class="cw-acts"><button data-pin title="Pin：一直留喺牆上">★ Pin</button><button data-skip title="剔走：Trader 唔會做佢">剔走</button><button data-big>放大</button></div></div>
       <div class="cw-sub"><span class="cw-trader"></span><div class="cw-tfs">${TFS.map(t => `<button data-tf="${t}">${t}</button>`).join('')}</div></div>
       <div class="cw-fig"><canvas aria-label="${esc(short(sym))} chart"></canvas><div class="cw-hud"></div></div></article>`;
   }
@@ -475,7 +475,7 @@ export function createChartWall(root, api) {
       el.querySelector('.cw-px').textContent = fmt(price);
       const c = el.querySelector('.cw-chg'); c.textContent = Number.isFinite(chg) ? `${pct(chg)} 24h` : ''; c.className = `cw-chg ${chg >= 0 ? 'up' : 'down'}`;
       const status = s?.status ?? p.status;
-      const sg = el.querySelector('.cw-stage'); sg.textContent = `${String(status).replaceAll('_', ' ')} · ${WHY[p.why] ?? p.why}`; sg.style.color = statusColor(status);
+      const sg = el.querySelector('.cw-stage'); sg.textContent = `${zh.st(status)} · ${WHY[p.why] ?? p.why}`; sg.style.color = statusColor(status);
       const [txt, cls] = traderNote(p.symbol), tr = el.querySelector('.cw-trader'); tr.textContent = txt; tr.className = `cw-trader ${cls}`;
       const pin = st.pins.includes(p.symbol), skip = st.skips.includes(p.symbol);
       const pb = el.querySelector('[data-pin]'); pb.classList.toggle('on', pin); pb.setAttribute('aria-pressed', pin);
@@ -492,16 +492,16 @@ export function createChartWall(root, api) {
     const sym = s => `<b>${esc(short(s))}</b>`;
     rail.innerHTML = `
       <h3>Trader 揀單範圍</h3>
-      <p class="muted">PMR 喺下面呢 ${ps.length} 隻出 proposal，Reviewer 核完先會落 paper 單。其他股就算出 proposal 都會記做 NOT IN PICKS。</p>
-      <ol>${ps.map(p => `<li data-go="${esc(p.symbol)}">${sym(p.symbol)}<span style="color:${statusColor(p.status)}">${esc(String(p.status).replaceAll('_', ' '))}</span><span class="why">${esc(WHY[p.why] ?? p.why)}</span></li>`).join('') || '<li class="muted">未有</li>'}</ol>
+      <p class="muted">PMR 喺下面呢 ${ps.length} 隻出 proposal，Reviewer 核完先會落 paper 單。其他股就算出 proposal 都會記做「唔喺 picks」。</p>
+      <ol>${ps.map(p => `<li data-go="${esc(p.symbol)}">${sym(p.symbol)}<span style="color:${statusColor(p.status)}">${esc(zh.st(p.status))}</span><span class="why">${esc(WHY[p.why] ?? p.why)}</span></li>`).join('') || '<li class="muted">未有</li>'}</ol>
       <h3>加入心水</h3>
-      <form data-addpin><input name="sym" placeholder="例如 MU 或 MUUSDT" autocomplete="off" aria-label="Symbol to pin"><button type="submit">★ Pin</button></form>
+      <form data-addpin><input name="sym" placeholder="例如 MU 或 MUUSDT" autocomplete="off" aria-label="要 pin 嘅股票"><button type="submit">★ Pin</button></form>
       <p class="muted">Pin 咗會一直喺牆上，下一次 scan（≤ 1 分鐘）開始掃。要係 Aster 股票永續。</p>
       ${st.skips.length ? `<h3>你剔走咗</h3><ul>${st.skips.map(s => `<li>${sym(s)}<span class="why"><button data-unskip="${esc(s)}">放返入嚟</button></span></li>`).join('')}</ul>` : ''}
       <h3>其他掃描中</h3>
-      <ul>${others.map(s => `<li>${sym(s.symbol)}<span style="color:${statusColor(s.status)}">${esc(String(s.status).replaceAll('_', ' '))}</span><span class="why"><button data-pinsym="${esc(s.symbol)}">★</button></span></li>`).join('') || '<li class="muted">冇</li>'}</ul>
+      <ul>${others.map(s => `<li>${sym(s.symbol)}<span style="color:${statusColor(s.status)}">${esc(zh.st(s.status))}</span><span class="why"><button data-pinsym="${esc(s.symbol)}">★</button></span></li>`).join('') || '<li class="muted">冇</li>'}</ul>
       <h3>Reviewer 最近決定</h3>
-      <ul>${dec.map(d => `<li>${sym(d.symbol)}<span class="${d.status === 'Approved' ? 'up' : 'warn'}">${esc(d.status)}</span><span class="why">${esc(String(d.reason).replaceAll('_', ' '))}</span></li>`).join('') || '<li class="muted">未有 proposal</li>'}</ul>`;
+      <ul>${dec.map(d => `<li>${sym(d.symbol)}<span class="${d.status === 'Approved' ? 'up' : 'warn'}">${esc(zh.dec(d.status))}</span><span class="why">${esc(zh.rsn(d.reason))}</span></li>`).join('') || '<li class="muted">未有 proposal</li>'}</ul>`;
   }
 
   function setTool(t) {
@@ -551,7 +551,7 @@ export function createChartWall(root, api) {
     if (b.hasAttribute('data-pin') && sym) return api.togglePick(sym, 'pin');
     if (b.hasAttribute('data-skip') && sym) return api.togglePick(sym, 'skip');
     if (b.hasAttribute('data-big') && sym) {
-      const on = !tile.classList.contains('big'); tile.classList.toggle('big', on); b.classList.toggle('on', on); b.textContent = on ? 'Shrink' : 'Expand';
+      const on = !tile.classList.contains('big'); tile.classList.toggle('big', on); b.classList.toggle('on', on); b.textContent = on ? '縮返' : '放大';
       wall.setActive(sym); if (on) tile.scrollIntoView({ block: 'nearest' });
       return;
     }

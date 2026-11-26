@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isStock, klineBar, specOf } from '../core/aster.mjs';
 import { DEFAULT_CFG } from '../core/desk.mjs';
-import { MIN, Scanner } from '../core/pmr.mjs';
+import { MIN, PMR_PRESETS, PMR_W2, Scanner } from '../core/pmr.mjs';
 import { simulatePlan } from '../core/postmortem.mjs';
 import { preTrade } from '../core/reviewer.mjs';
 import { framesFrom1m, M5, makeCore, runStep, smcSource, smcTrade, SMC_ADJ, SMC_CFG, SMC_SOURCE } from '../core/smc.mjs';
@@ -92,10 +92,11 @@ export function pmrRun(data, { cfg = DEFAULT_CFG, from, specs, params = cfg.pmr,
   return { rows, proposals: plans.length, declined, open: open.filter(o => o.until === Infinity).length, equity: r3(equity) };
 }
 
-// PMR variants studied on 2026-11-25 (none switched on live). V0 is the live v1.4. Report only.
-const W2 = { poiWaitMin: 60, retestMin: 240, mssMin: 90, fvgMin: 30, entryWindowMin: 120 };
+// PMR variants studied on 2026-11-25. Variants without `rr` keep v1.4's net R:R floor. 'all loosened, target 2.5R' =
+// preset loose-2.5R, live since 2026-11-26; the main PMR block of the report runs DEFAULT_CFG (the live preset).
+const W2 = PMR_W2, V14_RR = PMR_PRESETS['v1.4'].minNetRR;
 export const PMR_VARIANTS = {
-  'v1.4 (live)': {},
+  'v1.4': { p: PMR_PRESETS['v1.4'].pmr, rr: PMR_PRESETS['v1.4'].minNetRR },
   'net R:R ≥ 1.5': { rr: 1.5 },
   'windows ×2': { p: W2 },
   'displacement 0.8 ATR': { p: { dispAtr: 0.8 } },
@@ -105,9 +106,9 @@ export const PMR_VARIANTS = {
 };
 export function pmrVariants(data, { from, specs, split }) {
   return Object.entries(PMR_VARIANTS).map(([name, v]) => {
-    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? DEFAULT_CFG.minNetRR }, from, specs, params: v.p ?? {}, funnel });
+    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? V14_RR }, from, specs, params: v.p ?? {}, funnel });
     const rep = report(r.rows, split);
-    return { name, params: v.p ?? {}, minNetRR: v.rr ?? DEFAULT_CFG.minNetRR, proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves,
+    return { name, params: v.p ?? {}, minNetRR: v.rr ?? V14_RR, proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves,
       funnel: { breakouts: funnel.CONFIRMED_1H_BREAKOUT ?? 0, poi: funnel.FRESH_CAUSAL_15M_POI ?? 0, retest: funnel.FIRST_PARENT_RETEST ?? 0, mss: funnel['5M_MSS_DISPLACEMENT'] ?? 0, proposals: funnel.PROPOSAL ?? 0 } };
   });
 }
@@ -145,7 +146,7 @@ export async function run({ days = 180, top = 10, symbols, now = Date.now() } = 
   const smc = await smcRun(data, { from: W0, to: END, exInfo });
   log(`SMC: ${smc.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
   return { v: 1, t: Date.now(), from: W0, to: END, days, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
-    pmr: { ...report(pmr.rows, split), variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
+    pmr: { ...report(pmr.rows, split), variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { preset: DEFAULT_CFG.pmrPreset, riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
     smc: { ...report(smc.rows, split), open: smc.open, equity: smc.equity, skips: smc.skips, source: SMC_SOURCE, adj: SMC_ADJ },
     notes: ['Report only: never changes live rules or accounts.', 'Every symbol counts as a pick; Fred\'s marks, spread and funding are not modelled.',
       'Symbols are today\'s top stock perps by 24h volume, so delisted ones are missing. Symbols listed less than the window only count from their first bar.',
