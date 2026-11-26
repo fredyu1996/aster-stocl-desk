@@ -1,0 +1,16 @@
+{
+  "name": "agent-skills",
+  "version": "0.6.15-fred.1",
+  "description": "Trimmed fork of addyosmani/agent-skills 0.6.15 (commit 301b02b): duplicates of superpowers and built-ins removed.",
+  "author": {
+    "name": "Addy Osmani"
+  },
+  "homepage": "https://github.com/addyosmani/agent-skills",
+  "repository": "https://github.com/addyosmani/agent-skills",
+  "license": "MIT",
+  "commands": [
+    "./.claude/commands",
+    "./commands"
+  ],
+  "skills": "./skills"
+}

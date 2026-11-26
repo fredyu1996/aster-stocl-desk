@@ -14,7 +14,7 @@ Walkable 3D paper-trading desk for Aster DEX stock perpetuals with two paper tra
 Node 22+. No build step and no npm dependencies; the browser loads three.js 0.149.0 from jsDelivr through the import map in `index.html`.
 
 ```bash
-npm test                                   # node --test, offline
+npm test                                   # node --test test/*.test.mjs, offline
 STATE_OUT=/tmp/st.json node bot/run.mjs    # one real cycle against Aster, no token
 node tools/serve.mjs                       # desk on http://127.0.0.1:4180
 ```
@@ -44,6 +44,7 @@ Behind an HTTPS proxy add `NODE_USE_ENV_PROXY=1` for Node fetch. After a UI chan
 | `bot/run.mjs` | Cloud cycle (GitHub Actions `cloud-trader.yml`). `STATE_IN`/`STATE_OUT` for local files. |
 | `ui/scene.mjs` | three.js room: five desks (6 = SMC Trader), figures, four wall screens (north = picks, east = both traders' positions), walking, mouse-look (follow / fast / drag, `asd_look`; Esc with nothing open holds the view still) and picking. |
 | `ui/wall.mjs` | Picks wall overlay: interactive charts from Aster klines (zoom, pan, 1m–1d, older history on demand), Fred's mark tools, auto FVG / swings, PMR + Trader level layer, pin / skip. |
+| `.claude/settings.json`, `.mcp.json`, `.claude-plugin/marketplace.json`, `plugins/agent-skills/` | Fred's portable Claude Code setup (any machine / Cowork), public-safe part only (no global CLAUDE.md, playbooks, permissions, memory): marketplaces + `enabledPlugins`, model / effort, codegraph prompt hook, MCP servers (perplexity-docs, playwright, codegraph). His design / graphify skills sit in `.claude/skills/` beside the trading skills. This repo is the `fred-plugins` marketplace; `plugins/agent-skills` = copy of his local trimmed agent-skills fork (0.6.15-fred.1). Dev tooling only, not loaded by the desk. |
 | `ui/app.mjs`, `ui/charts.mjs`, `ui/styles.css` | Data loop, panels, review form, settings, canvas charts. ☁ Sync panel + HUD sync chip (modelled on aster-desk `src/sync.js`): role, take over / hand back, cloud-trader card from the public Actions runs API (no token), connect form (`asd_sync`: repo, branch, token, name, dev, on). |
 
 ## Invariants
