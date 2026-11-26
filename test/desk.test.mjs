@@ -40,6 +40,8 @@ function market(series, now, extra = {}) {
 }
 
 const run = (state, series, now, p = plan()) => cycle(state, market(series, now), { now, makeScanner: fakeScanner(p) });
+// An account on preset v1.4 (net R:R ≥ 2, 90-min time exit): the fill / exit tests below were written for it.
+const v14 = () => { const s = freshState(); applyPmrPreset(s.cfg, 'v1.4'); return s; };
 
 test('approves a 2R+ proposal, sizes by 1% risk and only fills on bars that open after the order is live', () => {
   // Price trades through 100 in minute 1, before the desk saw the proposal at T0 + 2m: no fill on that bar.
@@ -70,13 +72,18 @@ test('stop wins when stop and target share a bar, and R includes fees and slippa
 
 test('target and 90-minute time exits close at bar prices', () => {
   const up = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], [100.2, 104.2, 104]]);
-  const s = run(run(freshState(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
+  const s = run(run(v14(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
   assert.equal(s.trades[0].reason, 'Target');
   assert.ok(s.trades[0].r > 3, `r ${s.trades[0].r}`);
   const flat = [[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], ...Array.from({ length: 95 }, () => [100.1, 100.3, 100.2])];
-  const t = run(run(freshState(), bars(flat).slice(0, 13), T0 + 2 * MIN + 1), bars(flat), T0 + 98 * MIN + 1);
+  const t = run(run(v14(), bars(flat).slice(0, 13), T0 + 2 * MIN + 1), bars(flat), T0 + 98 * MIN + 1);
   assert.equal(t.trades[0].reason, 'Time exit');
   assert.equal(t.trades[0].exitAt, t.trades[0].entryAt + 90 * MIN);
+  // loose-1.5R-hold (live default since 2026-11-26) has no time exit: the same flat path keeps the position open.
+  const h = run(run(freshState(), bars(flat).slice(0, 13), T0 + 2 * MIN + 1), bars(flat), T0 + 98 * MIN + 1);
+  assert.equal(h.cfg.timeExitMin, null);
+  assert.equal(h.trades.length, 0);
+  assert.equal(h.positions.length, 1);
 });
 
 test('cancels the limit when the window passes or the scanner invalidates the proposal', () => {
@@ -91,7 +98,7 @@ test('cancels the limit when the window passes or the scanner invalidates the pr
 });
 
 test('reviewer declines low net R:R, wide spreads and approved-rule matches', () => {
-  const cfg = freshState().cfg;
+  const cfg = v14().cfg;
   const ctx = { cfg, equity: 1000, openNotional: 0, openCount: 0, holding: false, spec, book: null, funding: null, active: [] };
   assert.match(preTrade(plan({ target: 101.5 }), ctx).reason, /NET_RR/);
   assert.match(preTrade(plan(), { ...ctx, book: { bid: 99, ask: 101 } }).reason, /SPREAD/);
@@ -299,7 +306,7 @@ test('Reviewer proposes "confluence only" when trades without Fred\'s zone lose 
 
 test('postmortem replay gives the same fill, exit and R as the desk for an approved plan', () => {
   const up = bars([[100.4, 100.6, 100.5], [100.3, 100.6, 100.5], [99.9, 100.5, 100.2], [100.2, 104.2, 104]]);
-  const s = run(run(freshState(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
+  const s = run(run(v14(), up.slice(0, 13), T0 + 2 * MIN + 1), up, T0 + 4 * MIN + 1);
   const t = s.trades[0];
   const sim = simulatePlan(t.plan, up, s.cfg, { activeAfter: T0 + 2 * MIN });
   assert.equal(sim.reason, t.reason);
@@ -358,18 +365,21 @@ test('coach: findings cite evidence, verdict ladder, no breach claimed where no 
   assert.equal(coach([tr(0, 20, 2)], { reviews: { t0: { agree: true } } }).verdict, 'OK');
 });
 
-test('PMR presets: fresh accounts and accounts saved before presets run loose-2.5R; v1.4 stays selectable', () => {
-  assert.equal(freshState().cfg.pmrPreset, 'loose-2.5R');
-  assert.deepEqual(freshState().cfg.pmr, PMR_PRESETS['loose-2.5R'].pmr);
-  assert.equal(freshState().cfg.minNetRR, 1.5);
-  const old = normalize({ cfg: { ...DEFAULT_CFG, pmrPreset: undefined, pmr: {}, minNetRR: 2, riskPct: 0.5 } });
-  assert.equal(old.cfg.pmrPreset, 'loose-2.5R');
-  assert.equal(old.cfg.pmr.targetR, 2.5);
-  assert.equal(old.cfg.minNetRR, 1.5);
-  assert.equal(old.cfg.riskPct, 0.5);
-  const back = normalize({ cfg: applyPmrPreset({ ...old.cfg }, 'v1.4') });
-  assert.equal(back.cfg.pmrPreset, 'v1.4');
-  assert.deepEqual(back.cfg.pmr, {});
-  assert.equal(back.cfg.minNetRR, 2);
+test('PMR presets: fresh and older accounts move to loose-1.5R-hold once; Fred\'s later choice stands', () => {
+  const f = freshState().cfg;
+  assert.equal(f.pmrPreset, 'loose-1.5R-hold');
+  assert.deepEqual(f.pmr, PMR_PRESETS['loose-1.5R-hold'].pmr);
+  assert.equal(f.minNetRR, 1.2); assert.equal(f.timeExitMin, null); assert.equal(f.pmr.targetR, 1.5);
+  // Saved before presets (rev 0) and on loose-2.5R (rev 1): both take the new default, other settings stay.
+  for (const cfg of [{ ...DEFAULT_CFG, pmrPreset: undefined, presetRev: undefined, pmr: {}, minNetRR: 2, timeExitMin: 90, riskPct: 0.5 },
+    { ...DEFAULT_CFG, pmrPreset: 'loose-2.5R', presetRev: undefined, pmr: { ...PMR_PRESETS['loose-2.5R'].pmr }, minNetRR: 1.5, timeExitMin: 90, riskPct: 0.5 }]) {
+    const n = normalize({ cfg }).cfg;
+    assert.equal(n.pmrPreset, 'loose-1.5R-hold'); assert.equal(n.presetRev, 2);
+    assert.equal(n.pmr.targetR, 1.5); assert.equal(n.minNetRR, 1.2); assert.equal(n.timeExitMin, null); assert.equal(n.riskPct, 0.5);
+  }
+  // After that, switching back to v1.4 sticks.
+  const back = normalize(normalize({ cfg: applyPmrPreset({ ...freshState().cfg }, 'v1.4') }));
+  assert.equal(back.cfg.pmrPreset, 'v1.4'); assert.deepEqual(back.cfg.pmr, {});
+  assert.equal(back.cfg.minNetRR, 2); assert.equal(back.cfg.timeExitMin, 90);
   assert.equal(applyPmrPreset({ pmrPreset: 'v1.4' }, 'nope').pmrPreset, 'v1.4');
 });

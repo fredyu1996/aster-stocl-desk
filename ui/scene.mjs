@@ -369,7 +369,7 @@ export function createWorld(canvas, { onPick }) {
     header(ctx, w, 'Reviewer 規則 · Agent 通訊', '#34d399', 50);
     ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText('生效規則（你批准咗）', 40, 160);
     let y = 215; ctx.font = `34px ${FONT}`;
-    const base = [`扣埋手續費、滑價、funding 後 Net R:R ≥ ${s.cfg.minNetRR}`, `每單風險 ${s.cfg.riskPct}% · 最多 ${s.cfg.maxOpen} 個倉 · 點差 ≤ ${s.cfg.maxSpreadPct}%`, `${s.cfg.timeExitMin} 分鐘時間離場`];
+    const base = [`扣埋手續費、滑價、funding 後 Net R:R ≥ ${s.cfg.minNetRR}`, `每單風險 ${s.cfg.riskPct}% · 最多 ${s.cfg.maxOpen} 個倉 · 點差 ≤ ${s.cfg.maxSpreadPct}%`, s.cfg.timeExitMin ? `${s.cfg.timeExitMin} 分鐘時間離場` : '冇時間離場：揸到 stop 或 target'];
     for (const r of base) { ctx.fillStyle = '#94a3b8'; ctx.fillText(`• ${r}`, 40, y); y += 50; }
     for (const r of s.rules.active) { ctx.fillStyle = '#34d399'; ctx.fillText(`✓ ${view.ruleLabel(r)}`, 40, y); y += 50; }
     y += 20; ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText(`等你批嘅規則建議：${s.rules.proposals.length}`, 40, y); y += 55;

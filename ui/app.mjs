@@ -544,18 +544,18 @@ function review(id) {
 
 function settings() {
   const c = state.cfg;
-  const num = (k, label, step = 'any') => `<label>${label}<input type="number" step="${step}" data-cfg="${k}" value="${c[k]}"></label>`;
+  const num = (k, label, step = 'any', ph = '') => `<label>${label}<input type="number" step="${step}" data-cfg="${k}" value="${c[k] ?? ''}" placeholder="${ph}"></label>`;
   const preset = PMR_PRESETS[c.pmrPreset], P = { ...PMR_DEFAULT, ...c.pmr }, edited = preset && c.minNetRR !== preset.minNetRR;
   return `<h2>設定</h2>
     <h3>PMR 策略版本</h3>
     <label>PMR Trader 用<select data-pmr>${Object.entries(PMR_PRESETS).map(([k, p]) => `<option value="${k}" ${c.pmrPreset === k ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}${preset ? '' : '<option selected>自訂</option>'}</select></label>
-    <p class="muted">而家：displacement ≥ ${P.dispAtr} ATR · POI 距離 ≤ ${P.poiDistAtr} ATR · 回測 ≤ ${P.retestMin} 分鐘 · 5m MSS ≤ ${P.mssMin} 分鐘 · 入場窗 ${P.entryWindowMin} 分鐘 · target ${P.targetR ? `固定 ${P.targetR}R` : '1H measured move'} · net R:R ≥ ${c.minNetRR}${edited ? '（R:R 手動改過）' : ''}。
-    轉版本會一齊改 Scanner 參數同 net R:R 下限；已經掛咗嘅單同持倉照舊。放寬版喺回測（top 10 × 180 日）得 14 單、−0.7R，前後兩半 −2.8R（8 單）/ +2.1R（6 單）：樣本太細，係試驗，唔係結論。</p>
+    <p class="muted">而家：displacement ≥ ${P.dispAtr} ATR · POI 距離 ≤ ${P.poiDistAtr} ATR · 回測 ≤ ${P.retestMin} 分鐘 · 5m MSS ≤ ${P.mssMin} 分鐘 · 入場窗 ${P.entryWindowMin} 分鐘 · target ${P.targetR ? `固定 ${P.targetR}R` : '1H measured move'} · ${c.timeExitMin ? `${c.timeExitMin} 分鐘時間離場` : '冇時間離場（揸到 stop 或 target）'} · net R:R ≥ ${c.minNetRR}${edited ? '（R:R 手動改過）' : ''}。
+    轉版本會一齊改 Scanner 參數同 net R:R 下限；已經掛咗嘅單同持倉照舊。「放寬 + 1.5R · 冇時間離場」喺 mark price 回測（12 隻 × 499 日）得 20 單、+12.3R，前後兩半 +2.8R（4 單）/ +9.5R（16 單），持倉中位 13 粒鐘，冇計 funding：樣本細，係 paper 試驗。</p>
     <h3>戶口同風險</h3>
     <div class="grid">${num('universe', 'Watch 幾多隻（成交額排名）', 1)}${num('minVolume', '最少 24h 成交額（USDT）', 1000)}
     ${num('riskPct', '每單風險（淨值 %）')}${num('maxNotional', '每單最大名義（USDT）')}${num('levCap', '總槓桿上限（×）')}
     ${num('maxOpen', '持倉 + 掛單上限', 1)}${num('picks', '北牆心水數目', 1)}${num('minNetRR', '最少 net R:R')}${num('maxSpreadPct', '最大點差 %')}
-    ${num('fee', '每邊 taker 手續費（0.0004 = 0.04%）')}${num('slip', '離場滑價（0.0005 = 0.05%）')}${num('timeExitMin', '時間離場（分鐘）', 1)}
+    ${num('fee', '每邊 taker 手續費（0.0004 = 0.04%）')}${num('slip', '離場滑價（0.0005 = 0.05%）')}${num('timeExitMin', '時間離場（分鐘，留空 = 冇）', 1, '冇')}
     <label>一定要 watch（逗號分隔）<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>排除（逗號分隔）<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
     <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> PMR Trader 只做心水牆上面嘅 proposal</label></p>
@@ -595,6 +595,7 @@ $('#panel').addEventListener('change', e => {
   if (['always', 'exclude'].includes(k)) v = String(v).toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
   else if (k === 'smcScope') v = v === 'picks' ? 'picks' : 'watch';
   else if (k === 'pmrSource' || k === 'smcSource') v = v === 'mark' ? 'mark' : 'trade';
+  else if (k === 'timeExitMin' && String(v).trim() === '') v = null;
   else if (typeof v === 'string') { v = Number(v); if (!Number.isFinite(v)) return; }
   mutate(s => { s.cfg[k] = v; });
 });
