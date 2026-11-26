@@ -1,4 +1,6 @@
 // Candle charts on a 2D canvas (panels and wall textures).
+// Inter for Latin and digits, then a Traditional Chinese face (canvas text falls back per glyph).
+export const FONT = '"Inter", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif';
 export const C = { bg: '#0b1120', grid: 'rgba(120,150,210,.12)', text: '#9fb1d4', up: '#34d399', down: '#f87171',
   entry: '#60a5fa', stop: '#f87171', target: '#34d399', zone: 'rgba(250,204,21,.18)', zoneEdge: 'rgba(250,204,21,.7)', boundary: '#c084fc' };
 
@@ -28,7 +30,7 @@ export function fmt(n, d = 2) {
 export const money = n => `${n < 0 ? '−' : ''}$${fmt(Math.abs(n))}`;
 export const pct = n => Number.isFinite(n) ? `${n > 0 ? '+' : ''}${n.toFixed(2)}%` : '—';
 export const hhmm = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-export const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
+export const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? `${m} 分鐘` : m < 2880 ? `${Math.round(m / 60)} 粒鐘` : `${Math.round(m / 1440)} 日`; };
 
 // bars: [{t,start?,o,h,l,c}], lines: [{price,color,label,from?}], zones: [{lo,hi,from,to,color,label}]
 export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = [], title = '', font = 12 } = {}) {
@@ -36,7 +38,7 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
   ctx.save();
   ctx.fillStyle = C.bg; ctx.fillRect(x, y, w, h);
   if (!bars?.length) {
-    ctx.fillStyle = C.text; ctx.font = `${font}px Inter, system-ui, sans-serif`; ctx.fillText('No completed candles yet', x + 10, y + h / 2);
+    ctx.fillStyle = C.text; ctx.font = `${font}px ${FONT}`; ctx.fillText('未有完成嘅 K 線', x + 10, y + h / 2);
     ctx.restore(); return;
   }
   const pad = { l: 6, r: font * 5, t: font * 1.8, b: font * 1.6 };
@@ -47,7 +49,7 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
   const Y = p => y + pad.t + (hi - p) / (hi - lo) * ph;
   const t0 = bars[0].t, step = bars.length > 1 ? (bars.at(-1).t - t0) / (bars.length - 1) : 60000;
   const X = t => x + pad.l + ((t - t0) / step + 0.5) * pw / bars.length;
-  ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.fillStyle = C.text; ctx.font = `${font * 0.85}px Inter, system-ui, sans-serif`;
+  ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.fillStyle = C.text; ctx.font = `${font * 0.85}px ${FONT}`;
   for (let i = 0; i <= 4; i++) {
     const p = lo + (hi - lo) * i / 4, yy = Y(p);
     ctx.beginPath(); ctx.moveTo(x + pad.l, yy); ctx.lineTo(x + w - pad.r, yy); ctx.stroke();
@@ -79,8 +81,8 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
     ctx.fillStyle = m.color; ctx.beginPath(); ctx.arc(X(m.t), Y(m.price), font * 0.35, 0, Math.PI * 2); ctx.fill();
     if (m.label) { ctx.textAlign = 'center'; ctx.fillText(m.label, X(m.t), Y(m.price) + (m.above ? -font * 0.6 : font * 1.2)); ctx.textAlign = 'left'; }
   }
-  if (title) { ctx.fillStyle = '#e2e8f0'; ctx.font = `600 ${font}px Inter, system-ui, sans-serif`; ctx.fillText(title, x + 8, y + font * 1.25); }
-  ctx.fillStyle = C.text; ctx.font = `${font * 0.8}px Inter, system-ui, sans-serif`;
+  if (title) { ctx.fillStyle = '#e2e8f0'; ctx.font = `600 ${font}px ${FONT}`; ctx.fillText(title, x + 8, y + font * 1.25); }
+  ctx.fillStyle = C.text; ctx.font = `${font * 0.8}px ${FONT}`;
   ctx.fillText(hhmm(bars[0].t), x + pad.l, y + h - 4);
   ctx.fillText(hhmm(bars.at(-1).t), x + w - pad.r - font * 3, y + h - 4);
   ctx.restore();
@@ -89,8 +91,8 @@ export function drawCandles(ctx, box, bars, { lines = [], zones = [], marks = []
 export function drawLine(ctx, box, points, { color = '#60a5fa', base, title = '', font = 12 } = {}) {
   const { x, y, w, h } = box;
   ctx.save(); ctx.fillStyle = C.bg; ctx.fillRect(x, y, w, h);
-  if (title) { ctx.fillStyle = '#e2e8f0'; ctx.font = `600 ${font}px Inter, system-ui, sans-serif`; ctx.fillText(title, x + 8, y + font * 1.25); }
-  if (points.length < 2) { ctx.fillStyle = C.text; ctx.font = `${font}px Inter, sans-serif`; ctx.fillText('Waiting for closed trades', x + 10, y + h / 2); ctx.restore(); return; }
+  if (title) { ctx.fillStyle = '#e2e8f0'; ctx.font = `600 ${font}px ${FONT}`; ctx.fillText(title, x + 8, y + font * 1.25); }
+  if (points.length < 2) { ctx.fillStyle = C.text; ctx.font = `${font}px ${FONT}`; ctx.fillText('等緊第一單平倉', x + 10, y + h / 2); ctx.restore(); return; }
   const vs = points.map(p => p.v).concat(base ?? []);
   const lo = Math.min(...vs), hi = Math.max(...vs), span = hi - lo || 1;
   const X = i => x + 8 + i / (points.length - 1) * (w - 16), Y = v => y + font * 2 + (hi - v) / span * (h - font * 3);

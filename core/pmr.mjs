@@ -173,6 +173,16 @@ export const TERMINAL = new Set(['SKIPPED', 'EXPIRED', 'CANCELLED']);
 // GMS PMR v1.4 timing and size limits. The live desk uses exactly these (cfg.pmr overrides only after Fred approves a change).
 // targetR null = the 1H pattern's measured-move target (v1.4); a number = a fixed multiple of the entry-to-stop distance.
 export const PMR_DEFAULT = Object.freeze({ poiWaitMin: 30, poiAfterBars: 2, poiDistAtr: 0.5, retestMin: 120, mssMin: 45, fvgMin: 15, dispAtr: 1.2, entryWindowMin: 60, targetR: null });
+// Live PMR presets (Settings → PMR 版本). Fred, 2026-11-26: 「放寬條件」, with a switch; trade the loosened + 2.5R target
+// version on paper now (backtest top 10 × 180 d before the switch: n 14, −0.7R, halves −2.8R n 8 / +2.1R n 6).
+// A preset sets cfg.pmr (Scanner params) and cfg.minNetRR together; cfg.pmrPreset names it.
+export const PMR_W2 = Object.freeze({ poiWaitMin: 60, retestMin: 240, mssMin: 90, fvgMin: 30, entryWindowMin: 120 });
+export const PMR_PRESETS = Object.freeze({
+  'v1.4': { label: 'GMS PMR v1.4 原版', pmr: {}, minNetRR: 2.0 },
+  'loose-2.5R': { label: '放寬 + 固定 2.5R target', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, minNetRR: 1.5 },
+  loose: { label: '淨係放寬（measured-move target）', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0 }, minNetRR: 1.5 },
+});
+export const PMR_PRESET_DEFAULT = 'loose-2.5R';
 const AGENT = { PATTERN_CONFIRMED: 'screener', WAIT_POI: 'screener', WAIT_RETEST: 'screener', POI_TOUCHED: 'trader',
   LTF_CONFIRMED: 'trader', QUALIFIED: 'trader', SKIPPED: 'reviewer', EXPIRED: 'reviewer', CANCELLED: 'reviewer' };
 

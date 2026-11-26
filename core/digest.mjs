@@ -62,24 +62,24 @@ export function coach(trades, { reviews = {}, cfg = {}, start = 1000, week } = {
   const roots = {};
   for (const t of set) {
     let root = null;
-    if (t.r < -1.25) { add('risk', 'critical', `${t.symbol}: lost ${t.r.toFixed(2)}R vs a planned 1R (stop gapped or slipped).`, t); root = 'risk_sizing'; }
-    else if (t.r < -1.02) { add('risk', 'warning', `${t.symbol}: lost ${t.r.toFixed(2)}R, more than the planned 1R.`, t); root = 'risk_sizing'; }
+    if (t.r < -1.25) { add('risk', 'critical', `${t.symbol}：蝕咗 ${t.r.toFixed(2)}R，計劃係 1R（stop 跳空或者滑價）。`, t); root = 'risk_sizing'; }
+    else if (t.r < -1.02) { add('risk', 'warning', `${t.symbol}：蝕咗 ${t.r.toFixed(2)}R，多過計劃嘅 1R。`, t); root = 'risk_sizing'; }
     const delay = (t.entryAt - (t.plan?.signalAt ?? t.entryAt)) / 60_000;
-    if (delay > 15) { add('execution', t.r < 0 ? 'warning' : 'info', `${t.symbol}: filled ${Math.round(delay)} min after the signal (late fill).`, t); if (t.r < 0) root ??= 'execution'; }
+    if (delay > 15) { add('execution', t.r < 0 ? 'warning' : 'info', `${t.symbol}：訊號後 ${Math.round(delay)} min 先成交（遲入）。`, t); if (t.r < 0) root ??= 'execution'; }
     const rec = t.plan?.market?.rec;
-    if (rec && rec !== 'NEW_ENTRY_ALLOWED') { add('regime', 'warning', `${t.symbol}: taken while the exposure coach said ${rec}. You have no regime gate, so this is not a rule breach.`, t); if (t.r < 0) root ??= 'market_environment'; }
-    if (t.reason === 'Time exit' && t.r < 0) { add('process', 'info', `${t.symbol}: time exit at ${t.r.toFixed(2)}R, no follow-through.`, t); root ??= 'thesis_quality'; }
+    if (rec && rec !== 'NEW_ENTRY_ALLOWED') { add('regime', 'warning', `${t.symbol}：exposure coach 講緊 ${rec} 嗰陣入嘅。你冇設市況閘，所以唔算犯規。`, t); if (t.r < 0) root ??= 'market_environment'; }
+    if (t.reason === 'Time exit' && t.r < 0) { add('process', 'info', `${t.symbol}：${t.r.toFixed(2)}R 時間離場，冇 follow-through。`, t); root ??= 'thesis_quality'; }
     const rv = reviews[t.id];
-    if (rv && rv.agree === false) add('process', 'warning', `${t.symbol}: you disagreed with the Reviewer's grade${rv.comment ? ` ("${String(rv.comment).slice(0, 80)}")` : ''}.`, t);
+    if (rv && rv.agree === false) add('process', 'warning', `${t.symbol}：你唔同意 Reviewer 嘅評分${rv.comment ? `（「${String(rv.comment).slice(0, 80)}」）` : ''}。`, t);
     if (t.r < 0) { root ??= 'randomness'; roots[root] = (roots[root] ?? 0) + 1; }
   }
   // Streak and weekly loss: the desk has no limits for these, so they are reported as unclear, never as violations.
   let streak = 0;
   for (let i = set.length - 1; i >= 0 && set[i].r < 0; i--) streak++;
-  if (streak >= 3) add('risk', 'warning', `${streak} losses in a row. No losing-streak limit is set, so this is unclear rather than a breach.`);
+  if (streak >= 3) add('risk', 'warning', `連蝕 ${streak} 單。冇設連蝕上限，所以係未清楚，唔係犯規。`);
   const byWeek = {};
   for (const t of set) byWeek[weekOf(t.exitAt)] = (byWeek[weekOf(t.exitAt)] ?? 0) + t.pnl;
-  for (const [w, pnl] of Object.entries(byWeek)) if (pnl / start <= -0.05) add('risk', 'warning', `Week of ${w}: ${(pnl / start * 100).toFixed(1)}% of start equity. No weekly loss limit is set.`);
+  for (const [w, pnl] of Object.entries(byWeek)) if (pnl / start <= -0.05) add('risk', 'warning', `${w} 嗰個星期：起始本金嘅 ${(pnl / start * 100).toFixed(1)}%。冇設每週虧損上限。`);
 
   const score = axis => Math.max(0, 100 - sum(findings.filter(f => f.axis === axis).map(f => PTS[f.severity])));
   const crit = findings.filter(f => f.severity === 'critical').length, warn = findings.filter(f => f.severity === 'warning').length;
@@ -87,11 +87,11 @@ export function coach(trades, { reviews = {}, cfg = {}, start = 1000, week } = {
   const reviewed = set.filter(t => reviews[t.id]).length;
   const suggestions = [];
   const lost = (pred) => set.filter(t => t.r < 0 && pred(t));
-  if (findings.some(f => f.axis === 'risk' && f.severity === 'critical')) suggestions.push('Check exit slippage and stop gaps: some losses were larger than the planned 1R. Consider a higher slippage setting so sizing reflects it.');
+  if (findings.some(f => f.axis === 'risk' && f.severity === 'critical')) suggestions.push('睇下離場滑價同 stop 跳空：有啲蝕單大過計劃嘅 1R。可以考慮將滑價設定調高，等注碼計返入去。');
   const regimeLosses = lost(t => t.plan?.market?.rec && t.plan.market.rec !== 'NEW_ENTRY_ALLOWED');
-  if (regimeLosses.length >= 3) suggestions.push(`${regimeLosses.length} losses came while the exposure coach said reduce / cash. A regime gate would need your approval and more trades first.`);
-  if (lost(t => t.reason === 'Time exit').length >= 3) suggestions.push('Several time exits ended at a loss. Look at whether the 90-minute exit fits these stocks before changing it.');
-  if (set.length && reviewed / set.length < 0.5) suggestions.push(`Review more trades on the south wall (${reviewed}/${set.length} reviewed). The coach and the Reviewer learn from your reviews.`);
+  if (regimeLosses.length >= 3) suggestions.push(`有 ${regimeLosses.length} 單蝕單係 exposure coach 叫減倉 / 持現金時入嘅。要加市況閘，先要你批准，同埋要多啲交易做證據。`);
+  if (lost(t => t.reason === 'Time exit').length >= 3) suggestions.push('幾單時間離場都係蝕。改之前先睇下 90 分鐘離場啱唔啱呢啲股。');
+  if (set.length && reviewed / set.length < 0.5) suggestions.push(`去南牆多覆盤幾單（覆咗 ${reviewed}/${set.length}）。Coach 同 Reviewer 係靠你嘅覆盤學嘢。`);
   return { week: week ?? 'all', trades: set.length, verdict, scores: { risk: score('risk'), execution: score('execution'), process: score('process'), regime: score('regime') },
     reviewQuality: set.length ? Math.round(reviewed / set.length * 100) : null, rootCauses: roots, findings, suggestions, losingStreak: streak, smallSample: set.length < 20 };
 }

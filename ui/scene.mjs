@@ -1,17 +1,17 @@
 // Walkable 3D room: five agent desks (PMR Screener / Trader / Reviewer / Intel + the SMC Trader), the Screener picks wall (north), positions wall (east),
 // review wall (south) and the Reviewer's rules + agent comms wall (west).
 import * as THREE from 'three';
-import { C, drawCandles, drawLine, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
+import { C, FONT, drawCandles, drawLine, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
+import { dec, evt, ex, pat, rec, rsn, st, zone } from './zh.mjs';
 
 export const DESKS = [
-  { id: 'screener', key: '1', name: 'Screener', role: '1H pattern → 15m POI → 5m entry', color: 0x38bdf8, x: -6, z: -4 },
-  { id: 'trader', key: '2', name: 'Trader', role: 'Paper fills · stops · targets', color: 0x818cf8, x: 6, z: -4 },
-  { id: 'reviewer', key: '3', name: 'Reviewer', role: 'Net R:R gate · grades · rules', color: 0xc084fc, x: -6, z: 3 },
-  { id: 'intel', key: '4', name: 'Market Intel', role: 'Taker flow · volume · funding', color: 0x34d399, x: 6, z: 3 },
-  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto-desk SMC on stock perps', color: 0xf472b6, x: 11, z: 3 },
+  { id: 'screener', key: '1', name: 'Screener 篩選', role: '1H 形態 → 15m POI → 5m 入場', color: 0x38bdf8, x: -6, z: -4 },
+  { id: 'trader', key: '2', name: 'PMR Trader', role: 'Paper 成交 · stop · target', color: 0x818cf8, x: 6, z: -4 },
+  { id: 'reviewer', key: '3', name: 'Reviewer 審核', role: 'Net R:R 把關 · 評分 · 規則', color: 0xc084fc, x: -6, z: 3 },
+  { id: 'intel', key: '4', name: '市場情報', role: 'Taker 資金流 · 成交量 · 市況', color: 0x34d399, x: 6, z: 3 },
+  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto desk 嘅 SMC 做股票 perp', color: 0xf472b6, x: 11, z: 3 },
 ];
 const RX = 15, RZ = 10, RH = 4.6;
-const FONT = '"Inter", system-ui, sans-serif';
 
 function tex(w, h) {
   const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
@@ -120,33 +120,47 @@ export function createWorld(canvas, { onPick }) {
     solids.push([d.x - 1.9, d.z - 1.0, d.x + 1.9, d.z + 1.0]);
   }
 
-  // Walking: WASD / arrows, wheel to step. Looking: the view follows the mouse without a click (Settings → Mouse look),
-  // the cursor near the left / right edge keeps turning, and drag-to-look still works (and is the only mode on touch).
-  // Esc with nothing open holds the view still (mouse-follow and edge turning off) until Esc again; dragging still turns.
+  // Walking: WASD / arrows, wheel to step. Looking (Fred, 2026-11-26: with the old relative follow, a cursor that ran off
+  // the screen left the view stuck off-centre): the view is a heading (baseYaw / basePitch) plus an offset set by where the
+  // cursor sits on screen, eased like a spring. Cursor in the middle = looking along the heading, so bringing the mouse
+  // back to the middle always recentres. The outer 8 % of the screen turns the heading; leaving the window keeps the
+  // offset where it was. Drag turns the heading (the only mode on touch). C levels the view. Esc with nothing open holds
+  // the view still (no follow, no edge turning) until Esc again; dragging still turns.
   const keys = new Set();
-  let yaw = 0, pitch = -0.05, drag = null, moved = 0, hoverPt = null, edge = 0, still = false;
-  const LOOK = { follow: 0.0009, fast: 0.0018, drag: 0 };
+  let baseYaw = 0, basePitch = -0.05, yaw = 0, pitch = -0.05, drag = null, moved = 0, lastPt = null, edge = 0, still = false;
+  const off = { y: 0, p: 0 }, offT = { y: 0, p: 0 };
+  const LOOK = { follow: { y: 0.55, p: 0.3 }, fast: { y: 0.95, p: 0.45 }, drag: null }, BAND = 0.08;
   let look = (() => { try { return JSON.parse(localStorage.getItem('asd_look')) ?? 'follow'; } catch { return 'follow'; } })();
-  addEventListener('keydown', e => { if (!e.target.closest('input,textarea,select') && !document.body.classList.contains('wall-open')) keys.add(e.code); });
+  const following = () => !still && !!LOOK[look] && !document.body.classList.contains('wall-open');
+  const clampP = v => Math.max(-1.2, Math.min(1.2, v));
+  // Offset for a cursor position: ±range at the screen edges, 0 in the middle.
+  const offsetAt = pt => { const R = LOOK[look] ?? { y: 0, p: 0 }; return { y: -(pt.x / innerWidth - 0.5) * 2 * R.y, p: -(pt.y / innerHeight - 0.5) * 2 * R.p }; };
+  // Change the offset without moving the view: the heading absorbs the difference.
+  function rebase(o) { baseYaw += off.y - o.y; basePitch += off.p - o.p; off.y = offT.y = o.y; off.p = offT.p = o.p; }
+  addEventListener('keydown', e => {
+    if (e.target.closest('input,textarea,select') || document.body.classList.contains('wall-open')) return;
+    keys.add(e.code);
+    if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey) { basePitch = -0.05 - offT.p; flight = null; }
+  });
   addEventListener('keyup', e => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
   canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; moved = 0; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener('pointermove', e => {
+    if (e.pointerType === 'mouse') lastPt = { x: e.clientX, y: e.clientY };
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved += Math.abs(dx) + Math.abs(dy);
-      yaw -= dx * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * 0.004)); drag = { x: e.clientX, y: e.clientY };
-      hoverPt = null; return;
+      baseYaw -= dx * 0.004; basePitch = Math.max(-1.1, Math.min(1.1, basePitch - dy * 0.004)); drag = { x: e.clientX, y: e.clientY };
+      // The cursor moved with the drag: keep its offset in step so letting go does not swing the view.
+      if (following() && e.pointerType === 'mouse') rebase(offsetAt(lastPt));
+      edge = 0; flight = null; return;
     }
-    const k = still ? 0 : LOOK[look] ?? 0;
-    if (!k || e.pointerType !== 'mouse' || document.body.classList.contains('wall-open')) { hoverPt = null; edge = 0; return; }
-    // Gentle enough that a desk you move the cursor towards still comes under it; the edges do the big turns.
-    if (hoverPt) { yaw -= (e.clientX - hoverPt.x) * k; pitch = Math.max(-0.9, Math.min(0.9, pitch - (e.clientY - hoverPt.y) * k * 0.7)); flight = null; }
-    hoverPt = { x: e.clientX, y: e.clientY };
-    const fx = e.clientX / innerWidth, band = 0.06;
-    edge = fx < band ? (band - fx) / band : fx > 1 - band ? -(fx - (1 - band)) / band : 0;
+    if (e.pointerType !== 'mouse' || !following()) { edge = 0; return; }
+    Object.assign(offT, offsetAt(lastPt));
+    const fx = e.clientX / innerWidth;
+    edge = fx < BAND ? (BAND - fx) / BAND : fx > 1 - BAND ? -(fx - (1 - BAND)) / BAND : 0;
   });
-  canvas.addEventListener('pointerleave', () => { hoverPt = null; edge = 0; });
-  addEventListener('blur', () => { hoverPt = null; edge = 0; });
+  canvas.addEventListener('pointerleave', () => { edge = 0; });
+  addEventListener('blur', () => { edge = 0; });
   const ray = new THREE.Raycaster();
   canvas.addEventListener('pointerup', e => {
     drag = null;
@@ -175,9 +189,12 @@ export function createWorld(canvas, { onPick }) {
     const sp = (keys.has('ShiftLeft') ? 7 : 3.6) * dt;
     const f = (keys.has('KeyW') || keys.has('ArrowUp')) - (keys.has('KeyS') || keys.has('ArrowDown'));
     const s = (keys.has('KeyD')) - (keys.has('KeyA'));
-    if (keys.has('ArrowLeft')) yaw += 1.8 * dt;
-    if (keys.has('ArrowRight')) yaw -= 1.8 * dt;
-    if (edge && !drag && !still && (LOOK[look] ?? 0)) { yaw += edge * 1.5 * dt; flight = null; }
+    if (keys.has('ArrowLeft')) baseYaw += 1.8 * dt;
+    if (keys.has('ArrowRight')) baseYaw -= 1.8 * dt;
+    if (edge && !drag && following()) { baseYaw += edge * 1.6 * dt; flight = null; }
+    // Spring-like easing of the cursor offset (exponential approach: no overshoot, frame-rate independent).
+    const ease = 1 - Math.exp(-dt * 11);
+    off.y += (offT.y - off.y) * ease; off.p += (offT.p - off.p) * ease;
     if (f || s) { flight = null; walk(s * sp, f * sp); }
     if (flight) {
       flight.t = Math.min(1, flight.t + Math.min(real, 0.5) * 1.4);
@@ -185,9 +202,12 @@ export function createWorld(canvas, { onPick }) {
       camera.position.x = flight.from.x + (flight.x - flight.from.x) * k;
       camera.position.z = flight.from.z + (flight.z - flight.from.z) * k;
       let dy = flight.yaw - flight.from.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-      yaw = flight.from.yaw + dy * k; pitch += (0 - pitch) * k * 0.2;
+      // The flight steers the total view; the heading takes whatever the cursor offset is not covering.
+      baseYaw = flight.from.yaw + dy * k - off.y;
+      basePitch += (-0.05 - off.p - basePitch) * Math.min(1, k * 0.25);
       if (flight.t >= 1) flight = null;
     }
+    yaw = baseYaw + off.y; pitch = clampP(basePitch + off.p);
     camera.rotation.set(pitch, yaw, 0);
     for (const fg of figures) { fg.fig.position.y = Math.sin(now / 700 + fg.phase) * 0.03; fg.fig.rotation.y = Math.sin(now / 2100 + fg.phase) * 0.25; }
     renderer.render(scene, camera);
@@ -199,7 +219,7 @@ export function createWorld(canvas, { onPick }) {
   function drawBoard(view) {
     const { ctx, w, h } = BOARD, s = view.state, picks = (s.picks ?? []).slice(0, 6);
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
-    header(ctx, w, `SCREENER PICKS · the Trader only trades these · ${picks.length} on the wall · click a chart to mark it up`, '#4f7cff', 50);
+    header(ctx, w, `Screener 心水 · Trader 只做呢幾隻 · 牆上 ${picks.length} 隻 · 撳 chart 去畫標記`, '#4f7cff', 50);
     const rows = Math.max(1, Math.ceil(picks.length / PICK_COLS)), cw = w / PICK_COLS, ch = (h - PICK_TOP) / Math.max(2, rows);
     picks.forEach((p, i) => {
       const x = (i % PICK_COLS) * cw + 12, y = PICK_TOP + Math.floor(i / PICK_COLS) * ch + 6, bw = cw - 24, bh = ch - 12;
@@ -214,12 +234,12 @@ export function createWorld(canvas, { onPick }) {
         const mo = marksOverlay(near.slice(-14));
         ov.lines.push(...mo.lines); ov.zones.push(...mo.zones); ov.marks.push(...mo.marks);
       }
-      const tag = live ? (live.entryAt ? ' · OPEN' : ' · LIMIT') : p.why === 'pinned' ? ' · ★' : '';
+      const tag = live ? (live.entryAt ? ' · 持倉' : ' · 掛單') : p.why === 'pinned' ? ' · ★' : '';
       drawCandles(ctx, { x, y, w: bw, h: bh }, bars, { ...ov, font: 30, title: `${p.symbol.replace('USDT', '')} ${fmt(p.price)}${tag}` });
       ctx.font = `600 28px ${FONT}`; ctx.fillStyle = statusColor(p.status); ctx.textAlign = 'right';
-      ctx.fillText(clip(ctx, p.status.replaceAll('_', ' '), bw * 0.45), x + bw - 160, y + 38); ctx.textAlign = 'left';
+      ctx.fillText(clip(ctx, st(p.status), bw * 0.45), x + bw - 160, y + 38); ctx.textAlign = 'left';
     });
-    if (!picks.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Waiting for the first scan. Picks appear here.', 60, h / 2); }
+    if (!picks.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('等緊第一次掃描，心水會喺呢度出現。', 60, h / 2); }
     BOARD.t.needsUpdate = true;
     BOARD.ids = picks.map(p => p.symbol);
     BOARD.rows = Math.max(2, rows);
@@ -229,7 +249,7 @@ export function createWorld(canvas, { onPick }) {
     const { ctx, w, h } = POS, s = view.state;
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
     const a = s.acct;
-    header(ctx, w, `OPEN POSITIONS · equity ${money(a.equity)} (${pct((a.equity / a.start - 1) * 100)}) · max DD ${fmt(a.maxDD * 100, 1)}%`, '#ffd166', 50);
+    header(ctx, w, `持倉 · PMR 淨值 ${money(a.equity)}（${pct((a.equity / a.start - 1) * 100)}）· 最大回撤 ${fmt(a.maxDD * 100, 1)}%`, '#ffd166', 50);
     const smcPos = Object.entries(s.smc?.acct?.pos ?? {}).map(([sym, p]) => ({ symbol: sym, direction: p.side === 'L' ? 1 : -1, entry: p.entry, stop: p.stop, target: p.target,
       entryAt: p.t, qty: p.qty, mark: view.scanMap[sym]?.price ?? p.entry, kind: 'OPEN', who: 'SMC' }));
     const items = [...s.positions.map(p => ({ ...p, kind: 'OPEN', who: 'PMR' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING', who: 'PMR' })), ...smcPos].slice(0, 3);
@@ -238,11 +258,11 @@ export function createWorld(canvas, { onPick }) {
       const bars = view.scanMap[p.symbol]?.m5 ?? [];
       const unreal = p.kind === 'OPEN' ? p.direction * ((p.mark ?? p.entry) - p.entry) * p.qty : 0;
       drawCandles(ctx, { x: 20 + i * cw, y: top, w: cw - 20, h: ch }, bars, { ...tradeOverlay(p), font: 30,
-        title: `${p.who} · ${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind}${p.kind === 'OPEN' ? ` · ${unreal >= 0 ? '+' : ''}${fmt(unreal)} USDT` : ` @ ${fmt(p.entry)}`}` });
+        title: `${p.who} · ${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind === 'OPEN' ? '持倉' : '掛單'}${p.kind === 'OPEN' ? ` · ${unreal >= 0 ? '+' : ''}${fmt(unreal)} USDT` : ` @ ${fmt(p.entry)}`}` });
     });
-    if (!items.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Both traders flat. PMR waits for a 5m FVG entry, SMC for a sweep → MSS → zone.', 60, top + ch / 2); }
+    if (!items.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('兩個 Trader 都冇倉。PMR 等 5m FVG 入場，SMC 等 sweep → MSS → zone。', 60, top + ch / 2); }
     const eq = [{ v: a.start }, ...[...s.trades].reverse().reduce((acc, t) => { acc.push({ v: (acc.at(-1)?.v ?? a.start) + t.pnl }); return acc; }, [])];
-    drawLine(ctx, { x: 20 + 3 * cw, y: top, w: cw - 20, h: ch }, eq, { color: '#ffd166', base: a.start, title: `Closed-trade equity · ${s.trades.length} trades`, font: 30 });
+    drawLine(ctx, { x: 20 + 3 * cw, y: top, w: cw - 20, h: ch }, eq, { color: '#ffd166', base: a.start, title: `PMR 已平倉淨值 · ${s.trades.length} 單`, font: 30 });
     POS.t.needsUpdate = true;
   }
 
@@ -251,7 +271,7 @@ export function createWorld(canvas, { onPick }) {
     const { ctx, w, h } = REVIEW, s = view.state;
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
     const reviewed = s.trades.filter(t => s.reviews[t.id]).length;
-    header(ctx, w, `REVIEW WALL · click a trade to review it · ${reviewed}/${s.trades.length} reviewed by you`, '#c084fc', 50);
+    header(ctx, w, `覆盤牆 · 撳一單去覆盤 · 你覆咗 ${reviewed}/${s.trades.length}`, '#c084fc', 50);
     const trades = s.trades.slice(0, CARDS), cw = w / 4, chh = (h - 110) / 2;
     trades.forEach((t, i) => {
       const x = (i % 4) * cw + 14, y = 110 + Math.floor(i / 4) * chh + 8, cwi = cw - 28, chi = chh - 16;
@@ -261,12 +281,12 @@ export function createWorld(canvas, { onPick }) {
       ctx.fillStyle = '#e2e8f0'; ctx.font = `700 44px ${FONT}`; ctx.fillText(`${t.symbol.replace('USDT', '')} ${t.direction === 1 ? 'L' : 'S'}`, x + 150, y + 60);
       ctx.fillStyle = t.r >= 0 ? C.up : C.down; ctx.fillText(`${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R`, x + 150, y + 115);
       ctx.fillStyle = '#94a3b8'; ctx.font = `30px ${FONT}`;
-      ctx.fillText(clip(ctx, `${t.plan.pattern.type.replaceAll('_', ' ')} · ${t.reason} · ${new Date(t.exitAt).toLocaleDateString('en-CA')} ${hhmm(t.exitAt)}`, cwi - 40), x + 24, y + 180);
+      ctx.fillText(clip(ctx, `${pat(t.plan.pattern.type)} · ${ex(t.reason)} · ${new Date(t.exitAt).toLocaleDateString('en-CA')} ${hhmm(t.exitAt)}`, cwi - 40), x + 24, y + 180);
       const rv = s.reviews[t.id];
       ctx.fillStyle = rv ? '#c084fc' : '#475569'; ctx.font = `600 32px ${FONT}`;
-      ctx.fillText(rv ? `Your grade ${rv.grade ?? '—'} · ${rv.agree === false ? 'disagree' : 'agree'}` : 'Not reviewed yet', x + 24, y + chi - 30);
+      ctx.fillText(rv ? `你畀 ${rv.grade ?? '—'} · ${rv.agree === false ? '唔同意' : '同意'}` : '未覆盤', x + 24, y + chi - 30);
     });
-    if (!trades.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('Closed trades appear here for grading and your review.', 60, h / 2); }
+    if (!trades.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('平咗倉嘅單會喺呢度出現，等你評分同覆盤。', 60, h / 2); }
     REVIEW.t.needsUpdate = true;
     REVIEW.ids = trades.map(t => t.id);
   }
@@ -274,21 +294,21 @@ export function createWorld(canvas, { onPick }) {
   function drawRules(view) {
     const { ctx, w, h } = RULES, s = view.state;
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
-    header(ctx, w, 'REVIEWER RULES · AGENT COMMS', '#34d399', 50);
-    ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText('Active rules (your approval)', 40, 160);
+    header(ctx, w, 'Reviewer 規則 · Agent 通訊', '#34d399', 50);
+    ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText('生效規則（你批准咗）', 40, 160);
     let y = 215; ctx.font = `34px ${FONT}`;
-    const base = [`Net R:R ≥ ${s.cfg.minNetRR} after fees, slippage, funding`, `Risk ${s.cfg.riskPct}% · max ${s.cfg.maxOpen} open · spread ≤ ${s.cfg.maxSpreadPct}%`, `Time exit ${s.cfg.timeExitMin} min`];
+    const base = [`扣埋手續費、滑價、funding 後 Net R:R ≥ ${s.cfg.minNetRR}`, `每單風險 ${s.cfg.riskPct}% · 最多 ${s.cfg.maxOpen} 個倉 · 點差 ≤ ${s.cfg.maxSpreadPct}%`, `${s.cfg.timeExitMin} 分鐘時間離場`];
     for (const r of base) { ctx.fillStyle = '#94a3b8'; ctx.fillText(`• ${r}`, 40, y); y += 50; }
     for (const r of s.rules.active) { ctx.fillStyle = '#34d399'; ctx.fillText(`✓ ${view.ruleLabel(r)}`, 40, y); y += 50; }
-    y += 20; ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText(`Proposals waiting for you: ${s.rules.proposals.length}`, 40, y); y += 55;
+    y += 20; ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText(`等你批嘅規則建議：${s.rules.proposals.length}`, 40, y); y += 55;
     ctx.font = `32px ${FONT}`;
     for (const p of s.rules.proposals.slice(0, 4)) { ctx.fillStyle = '#fbbf24'; ctx.fillText(clip(ctx, `? ${view.ruleLabel(p)} — ${p.evidence}`, w / 2 - 80), 40, y); y += 48; }
     const x = w / 2 + 20; y = 160;
-    ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText('Agent comms', x, y); y += 50;
+    ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText('Agent 通訊', x, y); y += 50;
     const colors = Object.fromEntries(DESKS.map(d => [d.id, hex(d.color)]));
     for (const e of (s.events ?? []).slice(0, 15)) {
       ctx.font = `28px ${FONT}`; ctx.fillStyle = '#64748b'; ctx.fillText(hhmm(e.t), x, y);
-      ctx.fillStyle = colors[e.agent] ?? '#94a3b8'; ctx.font = `600 28px ${FONT}`; ctx.fillText(clip(ctx, e.title, 230), x + 100, y);
+      ctx.fillStyle = colors[e.agent] ?? '#94a3b8'; ctx.font = `600 28px ${FONT}`; ctx.fillText(clip(ctx, evt(e.title), 230), x + 100, y);
       ctx.fillStyle = '#cbd5e1'; ctx.font = `28px ${FONT}`; ctx.fillText(clip(ctx, `${e.symbol?.replace('USDT', '') ?? ''} ${e.text}`, w / 2 - 400), x + 340, y);
       y += 44;
     }
@@ -304,32 +324,32 @@ export function createWorld(canvas, { onPick }) {
     const row = (a, b, color = '#cbd5e1') => { ctx.fillStyle = '#94a3b8'; ctx.fillText(clip(ctx, a, 520), 24, y); ctx.fillStyle = color; ctx.fillText(clip(ctx, b, 420), 560, y); y += 38; };
     if (id === 'screener') {
       const scans = Object.values(view.scanMap).sort((a, b) => (statusColor(b.status) !== '#475569') - (statusColor(a.status) !== '#475569'));
-      for (const sc of scans.slice(0, 12)) row(sc.symbol.replace('USDT', ''), sc.status.replaceAll('_', ' '), statusColor(sc.status));
+      for (const sc of scans.slice(0, 12)) row(sc.symbol.replace('USDT', ''), st(sc.status), statusColor(sc.status));
     } else if (id === 'trader') {
-      row('Equity', money(s.acct.equity)); row('Open / pending', `${s.positions.length} / ${s.orders.length}`);
-      row('Closed trades', String(s.trades.length)); row('Trading', s.cfg.on ? 'ON (paper)' : 'OFF', s.cfg.on ? C.up : C.down);
+      row('淨值', money(s.acct.equity)); row('持倉 / 掛單', `${s.positions.length} / ${s.orders.length}`);
+      row('已平倉', String(s.trades.length)); row('交易', s.cfg.on ? '開（paper）' : '關', s.cfg.on ? C.up : C.down);
       for (const p of s.positions.slice(0, 4)) row(`${p.symbol} ${p.direction === 1 ? 'L' : 'S'} ${p.qty}`, `${fmt(p.entry)} → ${fmt(p.mark)}`);
     } else if (id === 'smc') {
       const m = s.smc, pos = Object.entries(m?.acct?.pos ?? {}), tr = m?.trades ?? [], totR = tr.reduce((a, t) => a + t.r, 0);
-      row('Equity', m?.equity != null ? money(m.equity) : '—'); row('Open · closed', `${pos.length} · ${tr.length} (${totR >= 0 ? '+' : ''}${totR.toFixed(1)}R)`);
-      row('Trading', m?.on === false || !s.cfg.on ? 'OFF' : 'ON (paper)', m?.on === false || !s.cfg.on ? C.down : C.up);
-      if (m?.error) row('Error', m.error, C.down);
+      row('淨值', m?.equity != null ? money(m.equity) : '—'); row('持倉 · 已平倉', `${pos.length} · ${tr.length} (${totR >= 0 ? '+' : ''}${totR.toFixed(1)}R)`);
+      row('交易', m?.on === false || !s.cfg.on ? '關' : '開（paper）', m?.on === false || !s.cfg.on ? C.down : C.up);
+      if (m?.error) row('出錯', m.error, C.down);
       for (const [sym, p] of pos.slice(0, 2)) row(`${sym.replace('USDT', '')} ${p.side} ${p.tf}`, `${fmt(p.entry)} · SL ${fmt(p.stop)}`);
-      for (const c of (m?.scan?.cands ?? []).slice(0, Math.max(0, 6 - pos.length))) row(`${c.b} ${c.side} ${c.tf}`, c.took ? 'ENTERED' : c.skip, c.took ? C.up : '#94a3b8');
-      if (!m?.scan?.cands?.length) row('No setup in a zone', '');
+      for (const c of (m?.scan?.cands ?? []).slice(0, Math.max(0, 6 - pos.length))) row(`${c.b} ${c.side} ${c.tf}`, c.took ? '入咗' : rsn(c.skip), c.took ? C.up : '#94a3b8');
+      if (!m?.scan?.cands?.length) row('冇 setup 喺 zone 入面', '');
     } else if (id === 'reviewer') {
-      for (const dcs of (s.decisions ?? []).slice(0, 7)) row(`${dcs.symbol.replace('USDT', '')} ${hhmm(dcs.t)}`, `${dcs.status} · ${dcs.reason}`, dcs.status === 'Approved' ? C.up : '#fbbf24');
-      if (!s.decisions?.length) row('No proposals yet', '');
-      y += 10; row('Rule proposals', String(s.rules.proposals.length), '#fbbf24');
+      for (const dcs of (s.decisions ?? []).slice(0, 7)) row(`${dcs.symbol.replace('USDT', '')} ${hhmm(dcs.t)}`, `${dec(dcs.status)} · ${rsn(dcs.reason)}`, dcs.status === 'Approved' ? C.up : '#fbbf24');
+      if (!s.decisions?.length) row('未有 proposal', '');
+      y += 10; row('規則建議', String(s.rules.proposals.length), '#fbbf24');
     } else {
       const m = s.market, ex = m?.exposure;
       if (ex) {
-        row('US posture', `${ex.recommendation.replaceAll('_', ' ')} · ceiling ${ex.ceiling}%`, ex.recommendation === 'NEW_ENTRY_ALLOWED' ? C.up : ex.recommendation === 'REDUCE_ONLY' ? '#fbbf24' : C.down);
-        row('Breadth · uptrend', `${m.breadth ? `${m.breadth.composite} ${m.breadth.zone}` : 'n/a'} · ${m.uptrend ? `${m.uptrend.composite} ${m.uptrend.zone}` : 'n/a'}`);
+        row('美股市況', `${rec(ex.recommendation)} · 上限 ${ex.ceiling}%`, ex.recommendation === 'NEW_ENTRY_ALLOWED' ? C.up : ex.recommendation === 'REDUCE_ONLY' ? '#fbbf24' : C.down);
+        row('Breadth · uptrend', `${m.breadth ? `${m.breadth.composite} ${zone(m.breadth.zone)}` : 'n/a'} · ${m.uptrend ? `${m.uptrend.composite} ${zone(m.uptrend.zone)}` : 'n/a'}`);
         y += 6;
       }
-      for (const it of (s.intel ?? []).slice(0, ex ? 8 : 11)) row(`${hhmm(it.t)} ${it.type}`, it.title.replace('USDT', ''), it.type === 'FLOW' ? '#34d399' : '#38bdf8');
-      if (!s.intel?.length) row('Quiet tape', '');
+      for (const it of (s.intel ?? []).slice(0, ex ? 8 : 11)) row(`${hhmm(it.t)} ${evt(it.type)}`, it.title.replace('USDT', ''), it.type === 'FLOW' ? '#34d399' : '#38bdf8');
+      if (!s.intel?.length) row('成交好靜', '');
     }
     T.t.needsUpdate = true;
   }
@@ -338,8 +358,14 @@ export function createWorld(canvas, { onPick }) {
     camera,
     get look() { return look; },
     get still() { return still; },
-    setStill(v) { still = !!v; hoverPt = null; edge = 0; },
-    setLook(v) { look = v in LOOK ? v : 'follow'; hoverPt = null; edge = 0; try { localStorage.setItem('asd_look', JSON.stringify(look)); } catch { /* storage blocked */ } },
+    get following() { return following(); },
+    // Holding still freezes the offset; letting go rebases so the view does not jump to the cursor.
+    setStill(v) { still = !!v; edge = 0; if (still) { offT.y = off.y; offT.p = off.p; } else rebase(lastPt && LOOK[look] ? offsetAt(lastPt) : { y: 0, p: 0 }); },
+    setLook(v) {
+      look = v in LOOK ? v : 'follow'; edge = 0;
+      rebase(lastPt && LOOK[look] ? offsetAt(lastPt) : { y: 0, p: 0 });
+      try { localStorage.setItem('asd_look', JSON.stringify(look)); } catch { /* storage blocked */ }
+    },
     goTo: (id, panel) => { const sp = SPOTS[id]; if (sp) goTo(sp[0], sp[1], sp[2] - (panel && innerWidth > 900 ? 0.3 : 0)); },
     boardAt: uv => {
       const cy = (1 - uv.y) * BOARD.h, col = Math.min(PICK_COLS - 1, Math.floor(uv.x * PICK_COLS)), rowI = Math.floor((cy - PICK_TOP) / ((BOARD.h - PICK_TOP) / (BOARD.rows ?? 2)));

@@ -85,10 +85,10 @@ export function filterReport(decisions, minN = 8) {
     const filled = done.filter(d => d.post.filled), rs = filled.map(d => d.post.r);
     const half = Math.floor(rs.length / 2), h1 = sum(rs.slice(0, half)), h2 = sum(rs.slice(half));
     const total = sum(rs);
-    let verdict = rs.length < minN ? `sample too small (${rs.length} filled < ${minN})`
-      : total <= -3 && h1 < 0 && h2 < 0 ? `kept you out of ${total.toFixed(1)}R of losses`
-      : total >= 3 && h1 > 0 && h2 > 0 ? `skipped ${total.toFixed(1)}R of winners; may be too strict (your call)`
-      : 'no clear effect yet';
+    let verdict = rs.length < minN ? `樣本太細（成交 ${rs.length} < ${minN}）`
+      : total <= -3 && h1 < 0 && h2 < 0 ? `幫你避開咗 ${total.toFixed(1)}R 蝕`
+      : total >= 3 && h1 > 0 && h2 > 0 ? `走漏咗 ${total.toFixed(1)}R 贏單；可能太嚴（你決定）`
+      : '暫時睇唔出效果';
     return { filter, declined: ds.length, resolved: done.length, filled: filled.length, pending: ds.length - done.length,
       missed: done.filter(d => d.post.outcome === 'MISSED_OPPORTUNITY').length, goodSkip: done.filter(d => d.post.outcome === 'GOOD_SKIP').length,
       neutral: done.filter(d => d.post.outcome === 'NEUTRAL').length, noFill: done.filter(d => !d.post.filled).length,

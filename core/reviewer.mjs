@@ -47,12 +47,12 @@ export function markCheck(plan, marks) {
 }
 
 export const RULES = {
-  avoidPattern: { label: v => `No ${v.replaceAll('_', ' ')} setups`, test: (f, v) => f.pattern === v },
-  avoidSide: { label: v => `No ${v} trades`, test: (f, v) => f.side === v },
-  avoidPoi: { label: v => `No 15m ${v} entries`, test: (f, v) => f.poi === v },
-  aPlusOnly: { label: () => 'A+ setups only (confluence + sweep)', test: f => f.grade !== 'A+' },
-  usHoursOnly: { label: () => 'US regular hours only', test: f => f.session !== 'us' },
-  marksConfluenceOnly: { label: () => 'Only setups that hit one of your same-direction FVG / OB marks', test: f => f.marks !== 'confluence' },
+  avoidPattern: { label: v => `唔做 ${v.replaceAll('_', ' ')} setup`, test: (f, v) => f.pattern === v },
+  avoidSide: { label: v => `唔做 ${v}`, test: (f, v) => f.side === v },
+  avoidPoi: { label: v => `唔做 15m ${v} 入場`, test: (f, v) => f.poi === v },
+  aPlusOnly: { label: () => '只做 A+ setup（confluence + sweep）', test: f => f.grade !== 'A+' },
+  usHoursOnly: { label: () => '只做美股正常交易時段', test: f => f.session !== 'us' },
+  marksConfluenceOnly: { label: () => '只做中咗你同方向 FVG / OB 標記嘅 setup', test: f => f.marks !== 'confluence' },
 };
 export const ruleKey = r => `${r.rule}:${r.value ?? ''}`;
 export const ruleLabel = r => RULES[r.rule]?.label(r.value ?? '') ?? r.rule;
@@ -84,14 +84,14 @@ export function grade(trade) {
   const items = [];
   let score = 25;
   const add = (ok, text, pts) => { items.push({ ok, text }); score += ok ? pts : 0; };
-  add(trade.plan.sweep, 'Liquidity sweep at the retest', 10);
-  add(trade.plan.poi.confluence, '15m OB/FVG confluence', 10);
-  add(trade.netRR >= 3, `Net R:R ${trade.netRR.toFixed(2)} (≥ 3 is strong)`, 10);
-  add(trade.entryAt - trade.plan.signalAt <= 15 * 60_000, 'Filled within 15 min of the signal', 5);
-  add(usSession(trade.plan.signalAt), 'Signal during US regular hours', 5);
-  add(!!trade.plan.marks?.confluence, 'Hit one of your same-direction FVG / OB marks', 0);
+  add(trade.plan.sweep, '回測時有 liquidity sweep', 10);
+  add(trade.plan.poi.confluence, '15m OB / FVG 重疊', 10);
+  add(trade.netRR >= 3, `Net R:R ${trade.netRR.toFixed(2)}（≥ 3 算強）`, 10);
+  add(trade.entryAt - trade.plan.signalAt <= 15 * 60_000, '訊號後 15 分鐘內成交', 5);
+  add(usSession(trade.plan.signalAt), '訊號喺美股正常交易時段', 5);
+  add(!!trade.plan.marks?.confluence, '中咗你同方向嘅 FVG / OB 標記', 0);
   if (trade.r >= 1.5) score += 30; else if (trade.r > 0) score += 15; else if (trade.r <= -0.9) score -= 15;
-  if (trade.reason === 'Time exit' && trade.r < 0) { score -= 5; items.push({ ok: false, text: 'Time exit at a loss: no follow-through' }); }
+  if (trade.reason === 'Time exit' && trade.r < 0) { score -= 5; items.push({ ok: false, text: '時間離場又蝕：冇 follow-through' }); }
   const letter = score >= 70 ? 'A' : score >= 55 ? 'B' : score >= 40 ? 'C' : score >= 25 ? 'D' : 'F';
   return { letter, score, items };
 }
