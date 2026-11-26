@@ -1,7 +1,7 @@
 // Walkable 3D room: five agent desks (PMR Screener / Trader / Reviewer / Intel + the SMC Trader), the Screener picks wall (north), positions wall (east),
 // review wall (south) and the Reviewer's rules + agent comms wall (west).
 import * as THREE from 'three';
-import { C, FONT, drawCandles, drawLine, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
+import { C, FONT, drawCandles, fmt, hhmm, marksOverlay, money, pct, statusColor, tradeOverlay } from './charts.mjs';
 import { dec, evt, ex, pat, rec, rsn, st, zone } from './zh.mjs';
 
 export const DESKS = [
@@ -9,7 +9,7 @@ export const DESKS = [
   { id: 'trader', key: '2', name: 'PMR Trader', role: 'Paper 成交 · stop · target', color: 0x818cf8, x: 6, z: -4 },
   { id: 'reviewer', key: '3', name: 'Reviewer 審核', role: 'Net R:R 把關 · 評分 · 規則', color: 0xc084fc, x: -6, z: 3 },
   { id: 'intel', key: '4', name: '市場情報', role: 'Taker 資金流 · 成交量 · 市況', color: 0x34d399, x: 6, z: 3 },
-  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto desk 嘅 SMC 做股票 perp', color: 0xf472b6, x: 11, z: 3 },
+  { id: 'smc', key: '6', name: 'SMC Trader', role: 'Crypto desk 嘅 SMC 做股票 perp', color: 0xf472b6, x: 11, z: -7.6 },
 ];
 const RX = 15, RZ = 10, RH = 4.6;
 
@@ -181,7 +181,7 @@ export function createWorld(canvas, { onPick }) {
   let flight = null;
   function goTo(x, z, faceYaw) { flight = { x, z, yaw: faceYaw, t: 0, from: { x: camera.position.x, z: camera.position.z, yaw } }; }
   const SPOTS = { board: [0, -1.6, 0], positions: [3.5, -0.5, -Math.PI / 2], reviews: [0, 1.5, Math.PI], rules: [-3.5, -0.5, Math.PI / 2],
-    ...Object.fromEntries(DESKS.map(d => [d.id, [d.x + 0.9, d.z + 4.4, 0]])) };
+    ...Object.fromEntries(DESKS.map(d => [d.id, [d.x + 0.9, Math.min(d.z + 4.4, RZ - 1), 0]])) };
 
   let last = performance.now();
   renderer.setAnimationLoop(() => {
@@ -245,25 +245,97 @@ export function createWorld(canvas, { onPick }) {
     BOARD.rows = Math.max(2, rows);
   }
 
+  // East wall (P): 交易直播 (Fred, 2026-11-26: a wall showing what the traders are doing now). Live cards for both traders'
+  // positions and pending limits (5m chart with E / SL / TP, live R, time held, setup), or what each trader is waiting for
+  // when flat; a merged activity feed on the right. Click a card or the feed to open the trader's panel.
+  const LIVE_TOP = 112, LIVE_COLS = 3, FEED_W = 880;
+  function liveItems(view) {
+    const s = view.state, px = sym => view.scanMap[sym]?.price;
+    const pmr = [...s.positions.map(p => ({ ...p, kind: 'OPEN' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING' }))].map(p => {
+      const now = px(p.symbol) ?? p.mark ?? p.entry, unit = p.riskUSDT && p.qty ? p.riskUSDT / p.qty : Math.abs(p.entry - p.stop);
+      return { ...p, who: 'PMR', panel: 'trader', now, r: p.kind === 'OPEN' ? p.direction * (now - p.entry) / unit : null,
+        setup: `${pat(p.plan?.pattern?.type)} · 15m ${p.plan?.poi?.type ?? ''} · ${p.plan?.grade ?? ''}` };
+    });
+    const smc = Object.entries(s.smc?.acct?.pos ?? {}).map(([sym, p]) => {
+      const now = px(sym) ?? p.entry, d = p.side === 'L' ? 1 : -1;
+      return { symbol: sym, direction: d, entry: p.entry, stop: p.stop, target: p.target, entryAt: p.t, qty: p.qty, kind: 'OPEN', who: 'SMC', panel: 'smc', now,
+        r: d * (now - p.entry) / Math.abs(p.entry - (p.stop0 ?? p.stop)), setup: `${p.tf ?? ''} ${p.zoneKind ?? ''}${p.tp1 ? ' · 已平一半' : ''}` };
+    });
+    return [...pmr.filter(x => x.kind === 'OPEN'), ...smc, ...pmr.filter(x => x.kind === 'PENDING')];
+  }
+  const held = t => { const m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? `${m} 分鐘` : `${Math.floor(m / 60)} 粒鐘 ${m % 60} 分`; };
   function drawPositions(view) {
     const { ctx, w, h } = POS, s = view.state;
     ctx.fillStyle = '#070b16'; ctx.fillRect(0, 0, w, h);
-    const a = s.acct;
-    header(ctx, w, `持倉 · PMR 淨值 ${money(a.equity)}（${pct((a.equity / a.start - 1) * 100)}）· 最大回撤 ${fmt(a.maxDD * 100, 1)}%`, '#ffd166', 50);
-    const smcPos = Object.entries(s.smc?.acct?.pos ?? {}).map(([sym, p]) => ({ symbol: sym, direction: p.side === 'L' ? 1 : -1, entry: p.entry, stop: p.stop, target: p.target,
-      entryAt: p.t, qty: p.qty, mark: view.scanMap[sym]?.price ?? p.entry, kind: 'OPEN', who: 'SMC' }));
-    const items = [...s.positions.map(p => ({ ...p, kind: 'OPEN', who: 'PMR' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING', who: 'PMR' })), ...smcPos].slice(0, 3);
-    const cw = (w - 40) / 4, top = 120, ch = h - top - 20;
-    items.forEach((p, i) => {
-      const bars = view.scanMap[p.symbol]?.m5 ?? [];
-      const unreal = p.kind === 'OPEN' ? p.direction * ((p.mark ?? p.entry) - p.entry) * p.qty : 0;
-      drawCandles(ctx, { x: 20 + i * cw, y: top, w: cw - 20, h: ch }, bars, { ...tradeOverlay(p), font: 30,
-        title: `${p.who} · ${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind === 'OPEN' ? '持倉' : '掛單'}${p.kind === 'OPEN' ? ` · ${unreal >= 0 ? '+' : ''}${fmt(unreal)} USDT` : ` @ ${fmt(p.entry)}`}` });
+    const a = s.acct, m = s.smc, items = liveItems(view), open = items.filter(x => x.kind === 'OPEN').length;
+    header(ctx, w, `交易直播 · 持倉 ${open} · 掛單 ${items.length - open} · PMR ${money(a.equity)}（${pct((a.equity / a.start - 1) * 100)}）· SMC ${m?.equity != null ? money(m.equity) : '—'}`, '#ffd166', 48);
+    const areaW = w - FEED_W - 40, cw = areaW / LIVE_COLS, ch = h - LIVE_TOP - 16;
+    POS.cards = [];
+    items.slice(0, LIVE_COLS).forEach((p, i) => {
+      const x = 20 + i * cw, y = LIVE_TOP, bw = cw - 20, chartH = ch - 150;
+      ctx.fillStyle = '#0d1426'; ctx.fillRect(x, y, bw, ch);
+      const col = p.who === 'SMC' ? '#f472b6' : '#818cf8';
+      ctx.fillStyle = col; ctx.fillRect(x, y, 8, ch);
+      drawCandles(ctx, { x: x + 14, y, w: bw - 20, h: chartH }, view.scanMap[p.symbol]?.m5 ?? [], { ...tradeOverlay(p), font: 26,
+        title: `${p.who} · ${p.symbol.replace('USDT', '')} ${p.direction === 1 ? 'LONG' : 'SHORT'} · ${p.kind === 'OPEN' ? '持倉中' : '掛 limit'}` });
+      let ty = y + chartH + 42;
+      ctx.font = `600 30px ${FONT}`; ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(clip(ctx, `入場 ${fmt(p.entry)} · SL ${fmt(p.stop)} · TP ${fmt(p.target)}`, bw - 40), x + 24, ty); ty += 46;
+      if (p.kind === 'OPEN') {
+        ctx.fillStyle = p.r >= 0 ? C.up : C.down; ctx.font = `800 34px ${FONT}`;
+        const rs = `${p.r >= 0 ? '+' : ''}${Number.isFinite(p.r) ? p.r.toFixed(2) : '—'}R`; ctx.fillText(rs, x + 24, ty);
+        const rw = ctx.measureText(rs).width;
+        ctx.fillStyle = '#cbd5e1'; ctx.font = `30px ${FONT}`; ctx.fillText(clip(ctx, ` · 而家 ${fmt(p.now)} · 揸咗 ${held(p.entryAt)}`, bw - 60 - rw), x + 24 + rw, ty);
+      } else {
+        ctx.fillStyle = '#fbbf24'; ctx.font = `30px ${FONT}`;
+        ctx.fillText(clip(ctx, `等成交 · 而家 ${fmt(p.now)} · ${p.plan?.expiresAt ? `${hhmm(p.plan.expiresAt)} 前有效` : ''}`, bw - 40), x + 24, ty);
+      }
+      ty += 42; ctx.fillStyle = '#94a3b8'; ctx.font = `28px ${FONT}`; ctx.fillText(clip(ctx, p.setup, bw - 40), x + 24, ty);
+      POS.cards.push(p.panel);
     });
-    if (!items.length) { ctx.fillStyle = '#64748b'; ctx.font = `44px ${FONT}`; ctx.fillText('兩個 Trader 都冇倉。PMR 等 5m FVG 入場，SMC 等 sweep → MSS → zone。', 60, top + ch / 2); }
-    const eq = [{ v: a.start }, ...[...s.trades].reverse().reduce((acc, t) => { acc.push({ v: (acc.at(-1)?.v ?? a.start) + t.pnl }); return acc; }, [])];
-    drawLine(ctx, { x: 20 + 3 * cw, y: top, w: cw - 20, h: ch }, eq, { color: '#ffd166', base: a.start, title: `PMR 已平倉淨值 · ${s.trades.length} 單`, font: 30 });
+    if (items.length > LIVE_COLS) { ctx.fillStyle = '#94a3b8'; ctx.font = `28px ${FONT}`; ctx.textAlign = 'right'; ctx.fillText(`仲有 ${items.length - LIVE_COLS} 單 · 撳去 Trader panel 睇`, areaW + 10, LIVE_TOP - 14); ctx.textAlign = 'left'; }
+    if (!items.length) drawWaiting(ctx, view, 20, LIVE_TOP, areaW - 20, ch);
+    drawFeed(ctx, view, w - FEED_W - 10, LIVE_TOP, FEED_W - 10, ch);
     POS.t.needsUpdate = true;
+  }
+  // Flat: what each trader is closest to.
+  function drawWaiting(ctx, view, x, y, ww, hh) {
+    const s = view.state;
+    ctx.fillStyle = '#0d1426'; ctx.fillRect(x, y, ww, hh);
+    ctx.fillStyle = '#e2e8f0'; ctx.font = `600 38px ${FONT}`; ctx.fillText('兩個 Trader 而家都冇倉，等緊：', x + 30, y + 60);
+    const half = ww / 2;
+    const col = (cx, title, color, rows) => {
+      let yy = y + 130; ctx.fillStyle = color; ctx.font = `700 32px ${FONT}`; ctx.fillText(title, cx, yy); yy += 52;
+      ctx.font = `30px ${FONT}`;
+      for (const [a, b, c] of rows.slice(0, 6)) { ctx.fillStyle = '#e2e8f0'; ctx.fillText(a, cx, yy); ctx.fillStyle = c ?? '#94a3b8'; ctx.fillText(clip(ctx, b, half - 240), cx + 190, yy); yy += 46; }
+      if (!rows.length) { ctx.fillStyle = '#64748b'; ctx.fillText('冇 setup 進行緊', cx, yy); }
+    };
+    const order = ['QUALIFIED', 'LTF_CONFIRMED', 'POI_TOUCHED', 'WAIT_RETEST', 'WAIT_POI', 'PATTERN_CONFIRMED'];
+    const pmrRows = Object.values(view.scanMap).filter(x => order.includes(x.status)).sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status))
+      .map(x => [x.symbol.replace('USDT', ''), `${st(x.status)}${x.anchor ? ` · ${pat(x.anchor.type)} ${x.anchor.direction === 1 ? '↑' : '↓'}` : ''}`, statusColor(x.status)]);
+    const smcRows = (s.smc?.scan?.cands ?? []).map(c => [c.b, `${c.side === 'L' ? 'Long' : 'Short'} ${c.tf} ${c.zone} · ${c.took ? '入咗' : rsn(c.skip)}`]);
+    col(x + 30, `PMR（${pmrRows.length} 隻有 setup）`, '#818cf8', pmrRows);
+    col(x + 30 + half, `SMC（${smcRows.length} 個喺 zone）`, '#f472b6', smcRows);
+  }
+  // Activity feed: PMR events + SMC entries / exits, newest first.
+  function drawFeed(ctx, view, x, y, ww, hh) {
+    const s = view.state;
+    ctx.fillStyle = '#0d1426'; ctx.fillRect(x, y, ww, hh);
+    ctx.fillStyle = '#e2e8f0'; ctx.font = `600 34px ${FONT}`; ctx.fillText('最新動作', x + 24, y + 50);
+    const pmr = (s.events ?? []).filter(e => ['PROPOSAL', 'APPROVED', 'DECLINED', 'FILLED', 'CLOSED', 'NO FILL'].includes(e.title))
+      .map(e => ({ t: e.t, who: 'PMR', what: evt(e.title), text: e.text.replace(/USDT/g, ''), c: e.title === 'CLOSED' ? '#ffd166' : e.title === 'DECLINED' || e.title === 'NO FILL' ? '#64748b' : '#818cf8' }));
+    const smcIn = (s.smc?.decisions ?? []).filter(d => d.status === 'Entered').map(d => ({ t: d.t, who: 'SMC', what: '入場', text: `${d.symbol.replace('USDT', '')} ${d.side === 'L' ? 'long' : 'short'} · ${d.reason}`, c: '#f472b6' }));
+    const smcOut = (s.smc?.trades ?? []).map(t => ({ t: t.exitAt, who: 'SMC', what: '平倉', text: `${t.symbol.replace('USDT', '')} ${ex(t.reason)} · ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R`, c: '#ffd166' }));
+    const feed = [...pmr, ...smcIn, ...smcOut].sort((a, b) => b.t - a.t);
+    let yy = y + 104;
+    for (const f of feed) {
+      if (yy > y + hh - 12) break;
+      ctx.font = `26px ${FONT}`; ctx.fillStyle = '#64748b'; ctx.fillText(hhmm(f.t), x + 24, yy);
+      ctx.fillStyle = f.c; ctx.font = `700 26px ${FONT}`; ctx.fillText(`${f.who} ${f.what}`, x + 120, yy);
+      ctx.fillStyle = '#cbd5e1'; ctx.font = `26px ${FONT}`; ctx.fillText(clip(ctx, f.text, ww - 300), x + 280, yy);
+      yy += 40;
+    }
+    if (!feed.length) { ctx.fillStyle = '#64748b'; ctx.font = `28px ${FONT}`; ctx.fillText('未有動作。', x + 24, yy); }
   }
 
   const CARDS = 8;
@@ -370,6 +442,13 @@ export function createWorld(canvas, { onPick }) {
     boardAt: uv => {
       const cy = (1 - uv.y) * BOARD.h, col = Math.min(PICK_COLS - 1, Math.floor(uv.x * PICK_COLS)), rowI = Math.floor((cy - PICK_TOP) / ((BOARD.h - PICK_TOP) / (BOARD.rows ?? 2)));
       return rowI < 0 ? null : BOARD.ids?.[rowI * PICK_COLS + col] ?? null;
+    },
+    // East wall click: the card's trader panel ('trader' / 'smc'), the feed → trader.
+    positionsAt: uv => {
+      const px = uv.x * POS.w, py = (1 - uv.y) * POS.h, areaW = POS.w - FEED_W - 40;
+      if (py < LIVE_TOP) return null;
+      if (px > POS.w - FEED_W - 10) return 'trader';
+      return POS.cards?.[Math.floor((px - 20) / (areaW / LIVE_COLS))] ?? null;
     },
     reviewAt: uv => {
       const cy = (1 - uv.y) * REVIEW.h, col = Math.min(3, Math.floor(uv.x * 4)), rowI = Math.floor((cy - 110) / ((REVIEW.h - 110) / 2));

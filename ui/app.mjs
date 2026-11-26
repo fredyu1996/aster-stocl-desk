@@ -44,6 +44,7 @@ const world = createWorld($('#scene'), {
   onPick(id, uv) {
     if (id === 'board') { openWall(world.boardAt(uv)); return; }
     if (id === 'reviews') { const t = world.reviewAt(uv); open(t ? `review:${t}` : 'reviewer', 'reviews'); return; }
+    if (id === 'positions') { open(world.positionsAt(uv) ?? 'trader', 'positions'); return; }
     const to = { positions: 'trader', rules: 'reviewer' }[id];
     open(to ?? id, to ? id : undefined);
   },
@@ -503,7 +504,9 @@ function backtestPanel() {
   loadBacktest();
   const d = bt.data;
   if (!d) return `<h2>回測</h2><p class="muted">${bt.err ? `未有報告（${esc(bt.err)}）。報告由每晚嘅 workflow「backtest」寫（Actions → backtest → Run workflow）。` : '載入緊最新報告…'}</p>`;
-  return `<h2>回測 · ${d.days} 日 · ${d.symbols.length} 隻股票永續</h2>
+  const flat = Object.entries(d.coverage ?? {}).filter(([, c]) => c.flatPct != null).map(([k, c]) => `${k.replace('USDT', '')} ${c.flatPct}%`);
+  return `<h2>回測 · ${d.days} 日 · ${d.symbols.length} 隻股票永續 · ${d.source === 'mark' ? 'Mark price K 線' : '成交 K 線'}</h2>
+    ${flat.length ? `<p class="${d.source === 'mark' ? 'muted' : 'warn'}">冇成交（平）嘅 1m K 線比例：${esc(flat.join(' · '))}${d.source === 'mark' ? '。Mark price 冇成交量，實際喺薄 book 成交可能差過 mark。' : '。比例高即係大部分時間冇成交，形態好難成立。'}</p>` : ''}
     <p class="muted">${new Date(d.from).toLocaleDateString('en-CA')} → ${new Date(d.to).toLocaleDateString('en-CA')} · ${new Date(d.t).toLocaleString('en-CA')} 跑 · ${esc(d.symbols.map(s => s.replace('USDT', '')).join(', '))}。
       只係報告：唔會改任何一個 trader。${esc(d.notes.slice(1).join(' '))}</p>
     ${btBlock(`PMR Trader（${esc(PMR_PRESETS[d.pmr.cfg?.preset]?.label ?? 'GMS PMR v1.4 原版')}）`, d.pmr)}${d.pmr.variants ? `<h3>PMR variants（只係報告；live 用緊嘅喺 ⚙ 設定揀）</h3>
@@ -627,7 +630,7 @@ $('#settingsBtn').addEventListener('click', () => open('settings'));
 
 addEventListener('pagehide', () => { flushMarks(); });
 
-globalThis.__desk = { world, wall, get state() { return state; } };
+globalThis.__desk = { world, wall, render, get state() { return state; } };
 render();
 // Wall and monitor textures are canvas text: redraw once the Chinese web font has arrived.
 document.fonts?.ready.then(() => render());
