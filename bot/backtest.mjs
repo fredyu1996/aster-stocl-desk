@@ -8,7 +8,7 @@
 // funding, and symbols delisted since (the list is today's top by volume).
 // Env: BT_DAYS (default 180; 'max' = from each symbol's listing), BT_TOP (default 10), BT_OUT (default report/stock-backtest.json),
 // BT_SYMBOLS (comma list, optional), BT_SOURCE ('trade' = traded 1m klines, default; 'mark' = mark-price 1m klines),
-// BT_VARIANTS ('0' skips the PMR variants table, for long runs), BT_CACHE (dir for fetched bars, optional).
+// BT_VARIANTS ('0' skips the PMR variants table, for long runs), BT_CACHE (dir for fetched bars, optional), BT_SMC ('0' skips SMC).
 // Data (checked 2026-11-26): Aster stock perps trade thinly, so 36–97 % of traded 1m candles are flat (no trades) even in US
 // hours, while mark-price candles move every minute and go back to each listing (NVDA / TSLA / AAPL / AMZN / META / MSFT from
 // 2025-07). Mark candles have no volume and fills in a thin book can be worse than the mark, so 'mark' is a price-path study.
@@ -122,12 +122,22 @@ export const PMR_VARIANTS = {
   'all loosened + R:R 1.5': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0 }, rr: 1.5 },
   'v1.4 timing, target 2.5R': { p: { targetR: 2.5 } },
   'all loosened, target 2.5R': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5 },
+  // Fred, 2026-11-26: 試下唔要時間限制 (on mark klines 39 of 47 loose-2.5R trades ended on the 90-min time exit).
+  // te = time exit in minutes; Infinity = held until stop or target. Funding is not modelled, which flatters long holds.
+  'all loosened, target 2.5R, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5, te: Infinity },
+  'all loosened, target 2.5R, time exit 1 day': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5, te: 1440 },
+  'all loosened, target 1.5R, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 1.5 }, rr: 1.2, te: Infinity },
+  'all loosened + R:R 1.5, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0 }, rr: 1.5, te: Infinity },
+  'v1.4 timing, target 2.5R, no time exit': { p: { targetR: 2.5 }, te: Infinity },
 };
+const median = xs => { if (!xs.length) return null; const a = [...xs].sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
 export function pmrVariants(data, { from, specs, split }) {
   return Object.entries(PMR_VARIANTS).map(([name, v]) => {
-    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? V14_RR }, from, specs, params: v.p ?? {}, funnel });
+    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? V14_RR, timeExitMin: v.te ?? DEFAULT_CFG.timeExitMin }, from, specs, params: v.p ?? {}, funnel });
     const rep = report(r.rows, split);
-    return { name, params: v.p ?? {}, minNetRR: v.rr ?? V14_RR, proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves,
+    const exits = {}; for (const x of r.rows) exits[x.why] = (exits[x.why] ?? 0) + 1;
+    return { name, params: v.p ?? {}, minNetRR: v.rr ?? V14_RR, timeExitMin: Number.isFinite(v.te ?? DEFAULT_CFG.timeExitMin) ? v.te ?? DEFAULT_CFG.timeExitMin : null,
+      proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves, open: r.open, exits, holdMin: median(r.rows.map(x => (x.t1 - x.t0) / MIN)),
       funnel: { breakouts: funnel.CONFIRMED_1H_BREAKOUT ?? 0, poi: funnel.FRESH_CAUSAL_15M_POI ?? 0, retest: funnel.FIRST_PARENT_RETEST ?? 0, mss: funnel['5M_MSS_DISPLACEMENT'] ?? 0, proposals: funnel.PROPOSAL ?? 0 } };
   });
 }
@@ -172,14 +182,15 @@ export async function run({ days = 180, top = 10, symbols, now = Date.now(), sou
   const pmr = pmrRun(data, { from: W0, specs });
   log(`PMR: ${pmr.proposals} proposals, ${pmr.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
   const variants = withVariants ? pmrVariants(data, { from: W0, specs, split }) : null;
-  const smc = await smcRun(data, { from: W0, to: END, exInfo });
+  const smc = process.env.BT_SMC === '0' ? { rows: [], open: 0, equity: null, skips: {} } : await smcRun(data, { from: W0, to: END, exInfo });
   log(`SMC: ${smc.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
   return { v: 1, t: Date.now(), from: W0, to: END, days: Math.round((END - W0) / DAY), source, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
     pmr: { ...report(pmr.rows, split), variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { preset: DEFAULT_CFG.pmrPreset, riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
     smc: { ...report(smc.rows, split), open: smc.open, equity: smc.equity, skips: smc.skips, source: SMC_SOURCE, adj: SMC_ADJ },
     notes: ['Report only: never changes live rules or accounts.', 'Every symbol counts as a pick; Fred\'s marks, spread and funding are not modelled.',
       'Symbols are today\'s top stock perps by 24h volume, so delisted ones are missing. Symbols listed less than the window only count from their first bar.',
-      'R: PMR = net P&L / planned risk (fees and slippage in the risk); SMC = realized P&L / risk at entry, as on the crypto desk.'] };
+      'R: PMR = net P&L / planned risk (fees and slippage in the risk); SMC = realized P&L / risk at entry, as on the crypto desk.',
+      'Variants without the 90-min time exit hold for hours (median shown); funding is not modelled, which flatters long holds.'] };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

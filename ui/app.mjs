@@ -97,7 +97,7 @@ function render() {
     <b>Aster Stock Desk</b>
     <span>淨值 <b>${money(a.equity)}</b> <i class="${a.equity >= a.start ? 'up' : 'down'}">${pct((a.equity / a.start - 1) * 100)}</i></span>
     <span>心水 <b>${state.picks.length}</b> · 持倉 ${state.positions.length} · 掛單 ${state.orders.length} · 交易 ${state.trades.length}</span>
-    <span>PMR <b>${esc(PMR_PRESETS[state.cfg.pmrPreset]?.label ?? '自訂')}</b></span>
+    <span>PMR <b>${esc(PMR_PRESETS[state.cfg.pmrPreset]?.label ?? '自訂')}</b> · ${SRC[state.cfg.pmrSource] ?? '成交'} K 線</span>
     <span>行情 <b class="${status.feed === '即時' ? 'up' : 'warn'}">${esc(status.feed)}</b>${status.at ? ` · ${hhmm(status.at)}` : ''}</span>
     ${syncChip()}
     ${status.note ? `<span class="warn">${esc(status.note)}</span>` : ''}`;
@@ -407,6 +407,7 @@ function intel() {
     ${table(['時間', '類型', '訊號', '詳情'], items)}<h3>股票永續 24h 成交額排名</h3>${table(['股票', '現價', '24h', '成交額'], movers)}`;
 }
 
+const SRC = { mark: 'Mark price', trade: '成交' };
 const money0 = n => Number.isFinite(n) ? money(n) : '—';
 const r2 = n => Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}R` : '—';
 function bucketTable(title, b) {
@@ -511,7 +512,7 @@ function backtestPanel() {
       只係報告：唔會改任何一個 trader。${esc(d.notes.slice(1).join(' '))}</p>
     ${btBlock(`PMR Trader（${esc(PMR_PRESETS[d.pmr.cfg?.preset]?.label ?? 'GMS PMR v1.4 原版')}）`, d.pmr)}${d.pmr.variants ? `<h3>PMR variants（只係報告；live 用緊嘅喺 ⚙ 設定揀）</h3>
       <p class="muted">v1.4 漏斗：${d.pmr.variants[0].funnel.breakouts} 次 1H 突破 → ${d.pmr.variants[0].funnel.poi} 個新鮮 15m zone → ${d.pmr.variants[0].funnel.retest} 次第一次回測 → ${d.pmr.variants[0].funnel.mss} 次 5m MSS → ${d.pmr.variants[0].funnel.proposals} 個 proposal。出到 proposal 嘅時候，大部分都過唔到 net R:R：等到 5m 入場形成，1H measured-move target 已經用咗大半。</p>
-      ${table(['Variant', 'Proposal', '交易', '勝率', '平均 R', '總 R', '前半', '後半'], d.pmr.variants.map(v => `<tr><td>${esc(v.name)}</td><td>${v.proposals}</td><td>${v.all.n}</td><td>${v.all.win == null ? '—' : `${v.all.win}%`}</td><td>${v.all.avgR ?? '—'}</td><td>${v.all.totR}R</td><td>${v.halves[0].totR}R (n ${v.halves[0].n})</td><td>${v.halves[1].totR}R (n ${v.halves[1].n})</td></tr>`))}` : ''}${btBlock('SMC Trader（crypto desk code，small-cap 設定）', d.smc)}`;
+      ${table(['Variant', '時間離場', '持倉中位', 'Proposal', '交易', '勝率', '平均 R', '總 R', '前半', '後半'], d.pmr.variants.map(v => `<tr><td>${esc(v.name)}</td><td>${v.timeExitMin === null ? '冇' : `${v.timeExitMin ?? 90} 分鐘`}</td><td>${v.holdMin == null ? '—' : v.holdMin >= 120 ? `${(v.holdMin / 60).toFixed(1)} 粒鐘` : `${Math.round(v.holdMin)} 分鐘`}</td><td>${v.proposals}</td><td>${v.all.n}</td><td>${v.all.win == null ? '—' : `${v.all.win}%`}</td><td>${v.all.avgR ?? '—'}</td><td>${v.all.totR}R</td><td>${v.halves[0].totR}R (n ${v.halves[0].n})</td><td>${v.halves[1].totR}R (n ${v.halves[1].n})</td></tr>`))}` : ''}${btBlock('SMC Trader（crypto desk code，small-cap 設定）', d.smc)}`;
 }
 
 const A_CHIPS = [['same', '照做'], ['skip', '唔做'], ['flip', '做反方向'], ['later', '遲啲 / 深啲入'], ['earlier', '早啲入'],
@@ -558,6 +559,9 @@ function settings() {
     <label>一定要 watch（逗號分隔）<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>排除（逗號分隔）<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
     <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> PMR Trader 只做心水牆上面嘅 proposal</label></p>
+    <h3>K 線來源</h3>
+    <div class="grid">${[['pmrSource', 'PMR Trader 用'], ['smcSource', 'SMC Trader 用']].map(([k, l]) => `<label>${l}<select data-cfg="${k}">${[['mark', 'Mark price K 線'], ['trade', '成交 K 線']].map(([v, t]) => `<option value="${v}" ${(c[k] ?? 'trade') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('')}</div>
+    <p class="muted">Aster 股票 perp 成交好薄：成交 1m K 線喺美股交易時段都有 36–97% 係平嘅（冇成交），形態好難成立。Mark price K 線每分鐘都郁，但冇成交量，薄 book 實際成交可能差過 mark。PMR 預設用 mark；SMC 預設用成交，因為佢喺 499 日 mark 數據回測入面 0 單。心水牆 chart 跟 PMR 嘅來源。Taker 資金流同成交量情報永遠用成交 K 線。轉來源唔會郁已經有嘅倉同掛單，但之後會用新 K 線管理。</p>
     <label>SMC Trader 掃<select data-cfg="smcScope">${[['watch', '所有 watch 緊嘅股（減剔走）'], ['picks', '淨係心水牆']].map(([v, l]) => `<option value="${v}" ${c.smcScope === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>3D 房</h3><label>滑鼠視角<select data-look>${[['follow', '跟住滑鼠位置（唔使撳）'], ['fast', '跟住滑鼠位置，轉得多啲'], ['drag', '淨係拖住先轉']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <p class="muted">跟住滑鼠：視線跟 cursor 喺畫面嘅位置，cursor 擺返正中（有個細圈）就望返正前面，所以 cursor 走遠咗都唔會迷失方向；擺去左右最邊就繼續轉。C 將視線擺返水平。撳一下照樣可以揀枱同牆。</p>
@@ -590,6 +594,7 @@ $('#panel').addEventListener('change', e => {
   let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
   if (['always', 'exclude'].includes(k)) v = String(v).toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
   else if (k === 'smcScope') v = v === 'picks' ? 'picks' : 'watch';
+  else if (k === 'pmrSource' || k === 'smcSource') v = v === 'mark' ? 'mark' : 'trade';
   else if (typeof v === 'string') { v = Number(v); if (!Number.isFinite(v)) return; }
   mutate(s => { s.cfg[k] = v; });
 });

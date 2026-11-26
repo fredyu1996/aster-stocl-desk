@@ -334,7 +334,10 @@ export class Scanner {
   }
 }
 
-// Taker-flow and volume intel from completed 5m candles (Market Intel desk).
+// Completed 5m candles from 1m bars (for intel on traded klines when the PMR Trader runs on mark-price klines).
+export const fiveMinute = bars => [...aggregate(bars, 5).values()];
+
+// Taker-flow and volume intel from completed 5m candles (Market Intel desk). `scanner` = a Scanner or { symbol, history: { 5 } }.
 export function intel(scanner) {
   const out = [];
   const five = scanner.history[5];

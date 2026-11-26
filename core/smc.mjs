@@ -150,7 +150,8 @@ export function smcCycle(state, market, core, { now = market.t } = {}) {
   // cfg.smcScope 'picks' puts it back on the picks wall only.
   const coins = state.cfg.smcScope === 'picks' ? state.picks.map(p => p.symbol) : market.universe.watch.filter(s => !state.skips.includes(s));
   const D = {};
-  for (const s of new Set([...coins, ...held])) if (market.bars[s]?.length) D[s] = framesFrom1m(market.bars[s]);
+  const src = market.smcBars ?? market.bars;
+  for (const s of new Set([...coins, ...held])) if (src[s]?.length) D[s] = framesFrom1m(src[s]);
   const { h } = core;
   h.prep(SMC_CFG, SMC_ADJ, smc.acct);
   const from = smc.lastStep ? smc.lastStep + M5 : end, tickFrom = Math.max(from, end - 11 * M5);

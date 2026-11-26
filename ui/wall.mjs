@@ -65,15 +65,17 @@ class Chart {
   setTf(tf) {
     this.tf = TFS.includes(tf) ? tf : '15m'; this.span = SPAN[this.tf]; this.noOlder = false;
     this.el.querySelectorAll('.cw-tfs button').forEach(b => { const on = b.dataset.tf === this.tf; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
-    this.bars = cache[`${this.sym}|${this.tf}`]?.bars ?? [];
+    this.bars = cache[`${this.src()}|${this.sym}|${this.tf}`]?.bars ?? [];
     this.reset();
     this.load();
   }
+  // Same klines as the PMR Trader (mark or traded), so Fred marks the candles the trader sees.
+  src() { return this.wall.api.state().cfg.pmrSource === 'mark' ? 'mark' : 'trade'; }
   async load(force = false) {
-    const tf = this.tf, key = `${this.sym}|${tf}`, c = cache[key];
+    const tf = this.tf, key = `${this.src()}|${this.sym}|${tf}`, c = cache[key];
     if (c && !force && Date.now() - c.at < 25_000) return;
     try {
-      const rows = await chartBars(this.sym, tf, { limit: c ? 60 : 600 });
+      const rows = await chartBars(this.sym, tf, { limit: c ? 60 : 600, source: this.src() });
       cache[key] = { bars: mergeBars(cache[key]?.bars, rows), at: Date.now() };
       this.err = '';
     } catch (e) { this.err = e.message; }
@@ -87,9 +89,9 @@ class Chart {
   async older() {
     if (this.oldBusy || this.noOlder || !this.bars.length || this.bars.length >= MAX_BARS) return;
     this.oldBusy = true;
-    const tf = this.tf, key = `${this.sym}|${tf}`;
+    const tf = this.tf, key = `${this.src()}|${this.sym}|${tf}`;
     try {
-      const rows = await chartBars(this.sym, tf, { limit: 500, endTime: this.bars[0].t - 1 });
+      const rows = await chartBars(this.sym, tf, { limit: 500, endTime: this.bars[0].t - 1, source: this.src() });
       if (tf !== this.tf) return;
       if (!rows.length) { this.noOlder = true; return; }
       const before = this.bars.length, merged = mergeBars(rows, this.bars);
