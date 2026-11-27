@@ -29,6 +29,12 @@
         "source": "github",
         "repo": "fredyu1996/claude_setup"
       }
+    },
+    "day-trader-skill": {
+      "source": {
+        "source": "github",
+        "repo": "Jakeschincariol/day-trader-skill"
+      }
     }
   },
   "enabledPlugins": {
@@ -38,7 +44,8 @@
     "claude-mem@thedotmack": true,
     "ponytail@ponytail": true,
     "agent-skills@fred-plugins": true,
-    "fred-design@fred-plugins": true
+    "fred-design@fred-plugins": true,
+    "day-trader-skill@day-trader-skill": true
   },
   "model": "opus",
   "effortLevel": "high",
@@ -58,6 +65,20 @@
           }
         ]
       }
+    ]
+  },
+  "permissions": {
+    "ask": [
+      "mcp__alpaca__place_stock_order",
+      "mcp__alpaca__cancel_order_by_id",
+      "mcp__alpaca__replace_order_by_id",
+      "mcp__alpaca__close_position"
+    ],
+    "deny": [
+      "mcp__alpaca__close_all_positions",
+      "mcp__alpaca__cancel_all_orders",
+      "mcp__alpaca__place_option_order",
+      "mcp__alpaca__place_crypto_order"
     ]
   }
 }
