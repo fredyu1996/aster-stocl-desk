@@ -34,7 +34,7 @@ export const EXIT = { Stop: '止蝕', Target: '止賺', 'Time exit': '時間離�
 export const ex = r => EXIT[r] ?? r ?? '';
 export const DECISION = { Approved: '批准', Declined: '拒絕', Entered: '入咗' };
 export const dec = s => DECISION[s] ?? s ?? '';
-export const EVENT = { CLOSED: '平倉', 'NO FILL': '冇成交', FILLED: '成交', PROPOSAL: 'Proposal', DECLINED: '拒絕', APPROVED: '批准', VOLUME: '成交量', FLOW: '資金流' };
+export const EVENT = { LEARNED: '學到規則', RETIRED: '規則退役', CLOSED: '平倉', 'NO FILL': '冇成交', FILLED: '成交', PROPOSAL: 'Proposal', DECLINED: '拒絕', APPROVED: '批准', VOLUME: '成交量', FLOW: '資金流' };
 export const evt = s => EVENT[s] ?? String(s ?? '').replace(/^GRADE /, '評分 ');
 export const side = d => (d === 1 || d === 'L' ? 'Long' : 'Short');
 

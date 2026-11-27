@@ -1,5 +1,6 @@
 // Reviewer: pre-trade checks, post-trade grading, and rule proposals learned from trades and Fred's reviews.
-// Learned rules are PROPOSALS. They only gate trades after Fred approves them in the Reviewer panel.
+// Rules: Fred's approvals of proposals from his own reviews, plus auto-learned `avoid` rules (core/learn.mjs, Fred
+// 2026-11-27: learned rules are tried at once and he can remove them).
 
 const ny = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });
 export function usSession(t) {
@@ -17,11 +18,26 @@ export function economics(plan, cfg, fundingRate = 0, fundingDue = false) {
   return { riskUnit, rewardUnit, netRR: riskUnit > 0 ? rewardUnit / riskUnit : -Infinity, funding };
 }
 
+// New York time-of-day bucket of a signal: pre (4:00–9:30), open (9:30–10:30), mid (10:30–14:00), close (14:00–16:00),
+// after (16:00–20:00), night, weekend.
+const nyh = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });
+export function hourBucket(t) {
+  const p = Object.fromEntries(nyh.formatToParts(t).map(x => [x.type, x.value]));
+  if (['Sat', 'Sun'].includes(p.weekday)) return 'weekend';
+  const m = +p.hour * 60 + +p.minute;
+  return m < 240 ? 'night' : m < 570 ? 'pre' : m < 630 ? 'open' : m < 840 ? 'mid' : m < 960 ? 'close' : m < 1200 ? 'after' : 'night';
+}
 export function features(plan) {
   return { pattern: plan.pattern.type, side: plan.direction === 1 ? 'long' : 'short', poi: plan.poi.type,
     grade: plan.grade, session: usSession(plan.signalAt) ? 'us' : 'off', sweep: plan.sweep ? 'sweep' : 'nosweep',
-    marks: plan.marks?.confluence ? 'confluence' : 'none' };
+    marks: plan.marks?.confluence ? 'confluence' : 'none', hour: hourBucket(plan.signalAt), symbol: String(plan.symbol ?? '').replace(/USDT$/, ''),
+    tm: plan.tm?.tag ?? 'unknown', news: plan.news?.tag ?? 'unknown', earn: plan.news?.earn ?? 'unknown' };
 }
+// Chinese names for learned features (rule labels and the Reviewer panel).
+export const FEATURE_ZH = { pattern: '1H 形態', side: '方向', poi: '15m POI', grade: 'Setup 級別', session: '時段', hour: '紐約時段', symbol: '股票',
+  tm: '時光機', news: '新聞', earn: '業績' };
+export const VALUE_ZH = { pre: '盤前', open: '開市第一個鐘', mid: '午市', close: '收市前', after: '盤後', night: '夜晚', weekend: '週末', us: '美股時段', off: '非美股時段',
+  favour: '偏 target', even: '五五波', against: '偏 stop', earnings: '有業績', news: '有新聞', quiet: '冇新聞', yes: '有', no: '冇', long: 'long', short: 'short' };
 
 // Fred's hand-drawn chart marks against one proposal. Auto marks and marks placed after the signal bar don't count.
 // Veto: his latest MSS points the other way, or the entry sits inside one of his opposite-direction FVG / OB zones.
@@ -53,6 +69,8 @@ export const RULES = {
   aPlusOnly: { label: () => '只做 A+ setup（confluence + sweep）', test: f => f.grade !== 'A+' },
   usHoursOnly: { label: () => '只做美股正常交易時段', test: f => f.session !== 'us' },
   marksConfluenceOnly: { label: () => '只做中咗你同方向 FVG / OB 標記嘅 setup', test: f => f.marks !== 'confluence' },
+  // value 'field=value' (auto-learned, core/learn.mjs)
+  avoid: { label: v => { const [f, x] = String(v).split('='); return `唔做 ${FEATURE_ZH[f] ?? f} = ${VALUE_ZH[x] ?? x}`; }, test: (f, v) => { const [k, x] = String(v).split('='); return String(f[k]) === x; } },
 };
 export const ruleKey = r => `${r.rule}:${r.value ?? ''}`;
 export const ruleLabel = r => RULES[r.rule]?.label(r.value ?? '') ?? r.rule;
@@ -102,32 +120,15 @@ export function grade(trade) {
 
 const avg = xs => xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
 
-// Learn rule proposals. Trades: bucket with n ≥ minN, both time halves losing, total ≤ −3R.
-// Reviews: the same complaint on ≥ 3 of Fred's reviews in a bucket.
-export function learn(trades, reviews, decided = {}, minN = 8) {
+// Rule proposals from Fred's reviews: the same complaint on ≥ 3 of his reviews. Trade buckets are learned automatically
+// (core/learn.mjs); these stay proposals because they are his opinion, not the numbers.
+export function learn(trades, reviews, decided = {}) {
   const out = [];
   const consider = (rule, value, evidence) => {
     const key = ruleKey({ rule, value });
     if (decided[key] || out.some(p => ruleKey(p) === key)) return;
     out.push({ rule, value, evidence });
   };
-  const closed = trades.filter(t => Number.isFinite(t.r)).sort((a, b) => a.exitAt - b.exitAt);
-  const buckets = [['pattern', 'avoidPattern'], ['side', 'avoidSide'], ['poi', 'avoidPoi'], ['grade', 'aPlusOnly', 'A'], ['session', 'usHoursOnly', 'off'], ['marks', 'marksConfluenceOnly', 'none']];
-  for (const [field, rule, only] of buckets) {
-    const values = new Set(closed.map(t => features(t.plan)[field]));
-    for (const v of values) {
-      if (only && v !== only) continue;
-      const set = closed.filter(t => features(t.plan)[field] === v);
-      const rest = closed.filter(t => features(t.plan)[field] !== v);
-      if (set.length < minN) continue;
-      const half = Math.floor(set.length / 2);
-      const h1 = avg(set.slice(0, half).map(t => t.r)), h2 = avg(set.slice(half).map(t => t.r));
-      const total = set.reduce((s, t) => s + t.r, 0);
-      if (h1 < -0.1 && h2 < -0.1 && total <= -3) {
-        consider(rule, only ? undefined : v, `Trades: ${field} ${v} ${avg(set.map(t => t.r)).toFixed(2)}R n${set.length} (halves ${h1.toFixed(2)} / ${h2.toFixed(2)}) vs rest ${avg(rest.map(t => t.r)).toFixed(2)}R n${rest.length}`);
-      }
-    }
-  }
   const byId = new Map(trades.map(t => [t.id, t]));
   const tally = new Map();
   for (const [id, rv] of Object.entries(reviews)) {

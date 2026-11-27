@@ -254,7 +254,7 @@ export function createWorld(canvas, { onPick }) {
     const pmr = [...s.positions.map(p => ({ ...p, kind: 'OPEN' })), ...s.orders.map(o => ({ ...o, kind: 'PENDING' }))].map(p => {
       const now = px(p.symbol) ?? p.mark ?? p.entry, unit = p.riskUSDT && p.qty ? p.riskUSDT / p.qty : Math.abs(p.entry - p.stop);
       return { ...p, who: 'PMR', panel: 'trader', now, r: p.kind === 'OPEN' ? p.direction * (now - p.entry) / unit : null,
-        setup: `${pat(p.plan?.pattern?.type)} · 15m ${p.plan?.poi?.type ?? ''} · ${p.plan?.grade ?? ''}` };
+        setup: `${pat(p.plan?.pattern?.type)} · 15m ${p.plan?.poi?.type ?? ''} · ${p.plan?.grade ?? ''}${p.plan?.tm ? ` · 時光機 ${{ favour: '偏 target', even: '五五波', against: '偏 stop' }[p.plan.tm.tag] ?? '—'}` : ''}${p.plan?.news?.tag === 'earnings' ? ' · 有業績' : ''}` };
     });
     const smc = Object.entries(s.smc?.acct?.pos ?? {}).map(([sym, p]) => {
       const now = px(sym) ?? p.entry, d = p.side === 'L' ? 1 : -1;
@@ -371,7 +371,7 @@ export function createWorld(canvas, { onPick }) {
     let y = 215; ctx.font = `34px ${FONT}`;
     const base = [`扣埋手續費、滑價、funding 後 Net R:R ≥ ${s.cfg.minNetRR}`, `每單風險 ${s.cfg.riskPct}% · 最多 ${s.cfg.maxOpen} 個倉 · 點差 ≤ ${s.cfg.maxSpreadPct}%`, s.cfg.timeExitMin ? `${s.cfg.timeExitMin} 分鐘時間離場` : '冇時間離場：揸到 stop 或 target'];
     for (const r of base) { ctx.fillStyle = '#94a3b8'; ctx.fillText(`• ${r}`, 40, y); y += 50; }
-    for (const r of s.rules.active) { ctx.fillStyle = '#34d399'; ctx.fillText(`✓ ${view.ruleLabel(r)}`, 40, y); y += 50; }
+    for (const r of s.rules.active) { ctx.fillStyle = r.auto ? '#fbbf24' : '#34d399'; ctx.fillText(clip(ctx, `${r.auto ? '自動 ·' : '✓'} ${view.ruleLabel(r)}`, w / 2 - 80), 40, y); y += 50; }
     y += 20; ctx.font = `600 36px ${FONT}`; ctx.fillStyle = '#e2e8f0'; ctx.fillText(`等你批嘅規則建議：${s.rules.proposals.length}`, 40, y); y += 55;
     ctx.font = `32px ${FONT}`;
     for (const p of s.rules.proposals.slice(0, 4)) { ctx.fillStyle = '#fbbf24'; ctx.fillText(clip(ctx, `? ${view.ruleLabel(p)} — ${p.evidence}`, w / 2 - 80), 40, y); y += 48; }
