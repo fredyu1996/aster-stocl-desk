@@ -1,5 +1,6 @@
 import { isStock, loadMarket } from '../core/aster.mjs';
-import { applyPmrPreset, choosePicks, cycle, freshState, normalize, persistable, pickInput } from '../core/desk.mjs';
+import { applyPmrPreset, choosePicks, cycle, freshState, nearProposal, normalize, persistable, pickInput } from '../core/desk.mjs';
+import { LEARN_EVERY, fetchLearnSample, learningRows } from '../core/learn.mjs';
 import { store, update } from '../core/github.mjs';
 import { PMR_DEFAULT, PMR_PRESETS, Scanner } from '../core/pmr.mjs';
 import { coach, digest, weeks } from '../core/digest.mjs';
@@ -116,7 +117,12 @@ async function refresh() {
   try {
     let market;
     try {
-      market = await loadMarket(state.cfg, held(state), { cache });
+      // News is loaded by the cloud runner only: Yahoo and SEC send no CORS headers, so a browser cannot read them.
+      market = await loadMarket(state.cfg, held(state), { cache, near: nearProposal(state) });
+      if (!(market.t - (state.learn?.at ?? 0) < LEARN_EVERY) && !(market.t - (cache.learnAt ?? 0) < 30 * 60_000)) {
+        cache.learnAt = market.t;
+        market.learn = await fetchLearnSample(CODE_REPO, { now: market.t }).catch(() => null);
+      }
       status.feed = '即時'; status.at = market.t; status.note = '';
       // Market posture (breadth + uptrend CSVs) refreshes at most hourly; display and record only.
       if (!(market.t - (state.market?.at ?? 0) < 60 * 60_000) && !(market.t - (cache.postureAt ?? 0) < 60 * 60_000)) {
@@ -368,17 +374,42 @@ function bucketStats() {
   return out;
 }
 
+// Time Machine and news on a plan, one short line.
+const TM_ZH = { favour: '偏 target', even: '五五波', against: '偏 stop', unknown: '數據唔夠' };
+function tmLine(tm) {
+  if (!tm) return '時光機：未計';
+  return `時光機：target 先到 ${Math.round(tm.pT * 100)}% · stop 先到 ${Math.round(tm.pS * 100)}% · 收支平衡要 ${Math.round(tm.breakeven * 100)}% · 實際 ${tm.share == null ? '—' : Math.round(tm.share * 100) + '%'} → ${TM_ZH[tm.tag] ?? tm.tag}（${tm.days} 日歷史，${tm.n} 次，seed ${tm.seed}）`;
+}
+const NEWS_ZH = { earnings: '有業績', news: '有新聞', quiet: '冇新聞', unknown: '未知' };
+function newsLine(n) {
+  if (!n) return '新聞：未查';
+  return `新聞：${NEWS_ZH[n.tag] ?? n.tag}${n.earn !== 'unknown' ? ` · 8-K 業績 ${n.earn === 'yes' ? '有' : '冇'}` : ''}${n.items?.length ? ` · ${n.items.slice(0, 2).map(i => i.title).join(' / ')}` : ''}`;
+}
+function learnHTML() {
+  const L = state.learn, I = state.rules.learnInfo, rows = learningRows(state), match = L && L.preset === state.cfg.pmrPreset && L.source === (state.cfg.pmrSource ?? 'trade');
+  const need = 2 * 6 + 10;
+  const log = (state.rules.log ?? []).slice(0, 8).map(x => `<li class="${x.kind === 'learned' ? 'up' : 'muted'}">${hhmm(x.t)} ${x.kind === 'learned' ? '學到' : '退役'} · ${esc(ruleLabel({ rule: x.key.split(':')[0], value: x.key.split(':').slice(1).join(':') }))} · <span class="muted">${esc(x.evidence)}</span></li>`).join('');
+  return `<h3>自己學習</h3>
+    <p class="muted">Reviewer 會一齊用三種數據學：每晚回測嘅交易（同 live 用緊嘅版本同 K 線）、live 交易、被拒絕 proposal 嘅重播。數據按時間分兩半，一組 setup 喺前半蝕、喺後半都蝕（每半 n ≥ 6，平均 ≤ −0.15R / −0.1R，合共 ≤ −3R），而且兩半都差過其他交易，就會自動加一條「唔做」規則，即刻生效。你撳「移除」佢就唔會再學返；如果之後嗰組唔再蝕，佢會自動退役。自動規則加埋最多擋一半交易。</p>
+    <div class="stats"><div><small>樣本</small><b>${rows.length}</b></div><div><small>回測 / live / 重播</small><b>${['bt', 'live', 'replay'].map(k => rows.filter(r => r.src === k).length).join(' / ')}</b></div>
+      <div><small>樣本合共</small><b>${rows.length ? `${rows.reduce((a, r) => a + r.R, 0).toFixed(1)}R` : '—'}</b></div><div><small>自動規則</small><b>${state.rules.active.filter(r => r.auto).length}</b></div></div>
+    <p class="muted">回測樣本：${L ? `${hhmm(L.at)} 讀取 · 報告 ${new Date(L.t).toLocaleDateString('en-CA')} · ${L.rows.length} 單 · ${L.days ?? '—'} 日 · ${L.symbols ?? '—'} 隻 · ${esc(PMR_PRESETS[L.preset]?.label ?? L.preset)} · ${L.source === 'mark' ? 'Mark' : '成交'} K 線${match ? '' : ' · <span class="warn">同 live 版本 / K 線唔夾，冇用</span>'}` : '未讀到（每晚回測寫完先有）'}${rows.length < need ? ` · <span class="warn">要 ≥ ${need} 單先開始學（而家 ${rows.length}）</span>` : ''}${I?.split ? ` · 前後分界 ${new Date(I.split).toLocaleDateString('en-CA')}` : ''}</p>
+    ${log ? `<ul class="items">${log}</ul>` : ''}`;
+}
+
 function reviewer() {
-  const active = state.rules.active.map(r => `<li>✓ ${esc(ruleLabel(r))} <button data-rule="remove" data-key="${esc(ruleKey(r))}">移除</button></li>`).join('');
+  const active = state.rules.active.map(r => `<li>${r.auto ? '<b class="up">自動</b>' : '✓'} ${esc(ruleLabel(r))} <button data-rule="remove" data-key="${esc(ruleKey(r))}">移除</button>${r.auto ? `<br><span class="muted">${hhmm(r.at)} 學到 · ${esc(r.evidence)}</span>` : ''}</li>`).join('');
   const props = state.rules.proposals.map(p => `<li><b>${esc(ruleLabel(p))}</b><br><span class="muted">${esc(p.evidence)}</span><br>
     <button data-rule="approve" data-key="${esc(ruleKey(p))}">批准</button> <button data-rule="reject" data-key="${esc(ruleKey(p))}">拒絕</button></li>`).join('');
   const dec = (state.decisions ?? []).slice(0, 30).map(d => `<tr><td>${hhmm(d.t)}</td><td>${d.symbol}</td><td class="${d.status === 'Approved' ? 'up' : d.status === 'Declined' ? 'warn' : ''}">${zh.dec(d.status)}</td>
-    <td>${esc(zh.rsn(d.reason))}</td><td>${Number.isFinite(d.netRR) ? d.netRR.toFixed(2) : ''}</td><td>${d.plan.grade}</td></tr>`);
+    <td>${esc(zh.rsn(d.reason))}</td><td>${Number.isFinite(d.netRR) ? d.netRR.toFixed(2) : ''}</td><td>${d.plan.grade}</td>
+    <td title="${esc(tmLine(d.plan.tm))}">${d.plan.tm ? `${TM_ZH[d.plan.tm.tag]} ${d.plan.tm.share == null ? '' : Math.round(d.plan.tm.share * 100) + '%'}` : '—'}</td><td title="${esc(newsLine(d.plan.news))}">${d.plan.news ? NEWS_ZH[d.plan.news.tag] : '—'}</td></tr>`);
   return `<h2>Reviewer 審核</h2>
-    <p class="muted">每個 proposal 都會核：扣埋 taker 手續費（每邊 ${state.cfg.fee * 100}%）、離場滑價（${state.cfg.slip * 100}%）同持倉期內嘅 funding 之後 net R:R ≥ ${state.cfg.minNetRR}、點差 ≤ ${state.cfg.maxSpreadPct}%、交易所 size 限制、持倉上限、你手畫嘅 chart 標記（同你最新 MSS 對頭，或者 entry 喺你反方向 FVG / OB 入面就拒絕），同埋你批准咗嘅規則。每單平倉後評 A–F。只有一組交易喺前後<i>兩半</i>都蝕（n ≥ 8，合共 ≤ −3R），或者你有三次覆盤講同一樣嘢，先會建議新規則。你未批准之前乜都唔會變。</p>
+    <p class="muted">每個 proposal 都會核：扣埋 taker 手續費（每邊 ${state.cfg.fee * 100}%）、離場滑價（${state.cfg.slip * 100}%）同持倉期內嘅 funding 之後 net R:R ≥ ${state.cfg.minNetRR}、點差 ≤ ${state.cfg.maxSpreadPct}%、交易所 size 限制、持倉上限、你手畫嘅 chart 標記（同你最新 MSS 對頭，或者 entry 喺你反方向 FVG / OB 入面就拒絕），同埋生效規則（自動學到嘅同你批准嘅）。每單平倉後評 A–F。你有三次覆盤講同一樣嘢，會建議新規則，要你批准。</p>
     <h3>生效規則</h3><ul class="rules">${active || '<li class="muted">冇。淨係基本檢查。</li>'}</ul>
-    <h3>規則建議</h3><ul class="rules">${props || '<li class="muted">冇建議：證據未夠。</li>'}</ul>
-    <h3>決定</h3>${table(['時間', '股票', '決定', '原因', 'Net R:R', 'Setup'], dec)}
+    ${learnHTML()}
+    <h3>規則建議（嚟自你嘅覆盤）</h3><ul class="rules">${props || '<li class="muted">冇建議：證據未夠。</li>'}</ul>
+    <h3>決定</h3>${table(['時間', '股票', '決定', '原因', 'Net R:R', 'Setup', '時光機', '新聞'], dec)}
     <h3>分組結果</h3>${table(['欄位', '值', 'n', '平均', '合共'], bucketStats())}
     <p class="muted">覆盤一單：行去南牆（V）撳佢張卡，或者喺 PMR Trader → 交易紀錄撳一行。</p>`;
 }
@@ -528,6 +559,7 @@ function review(id) {
   const chip = (group, [k, label]) => `<label class="chip"><input type="checkbox" name="${group}" value="${k}" ${rv[group]?.includes(k) ? 'checked' : ''}>${label}</label>`;
   return `<h2>${t.symbol} ${t.direction === 1 ? 'long' : 'short'} · ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R · 評分 ${t.grade?.letter}</h2>
     <p class="muted">${zh.pat(t.plan.pattern.type)} · 15m ${t.plan.poi.type} · ${t.plan.grade} · entry ${fmt(t.entry)} ${hhmm(t.entryAt)} → ${zh.ex(t.reason)} ${fmt(t.exit)} ${hhmm(t.exitAt)} · 入場時 net R:R ${t.netRR.toFixed(2)} · 手續費 ${money(t.fees)}${t.plan.marks ? ` · 你嘅標記：${t.plan.marks.confluence ? '中咗同方向 zone ✓' : '冇中 zone'}${t.plan.marks.mss ? `，最新 MSS ${t.plan.marks.mss}` : ''}` : ''}</p>
+    <p class="muted">${esc(tmLine(t.plan.tm))}<br>${esc(newsLine(t.plan.news))}</p>
     <canvas data-chart="trade:${id}" data-title="${t.symbol} 5m"></canvas>
     <ul class="items">${t.grade.items.map(i => `<li class="${i.ok ? 'up' : 'down'}">${i.ok ? '✓' : '✗'} ${esc(zh.item(i.text))}</li>`).join('')}</ul>
     <form id="rvform" data-id="${esc(id)}">
@@ -563,6 +595,9 @@ function settings() {
     <div class="grid">${[['pmrSource', 'PMR Trader 用'], ['smcSource', 'SMC Trader 用']].map(([k, l]) => `<label>${l}<select data-cfg="${k}">${[['mark', 'Mark price K 線'], ['trade', '成交 K 線']].map(([v, t]) => `<option value="${v}" ${(c[k] ?? 'trade') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('')}</div>
     <p class="muted">Aster 股票 perp 成交好薄：成交 1m K 線喺美股交易時段都有 36–97% 係平嘅（冇成交），形態好難成立。Mark price K 線每分鐘都郁，但冇成交量，薄 book 實際成交可能差過 mark。PMR 預設用 mark；SMC 預設用成交，因為佢喺 499 日 mark 數據回測入面 0 單。心水牆 chart 跟 PMR 嘅來源。Taker 資金流同成交量情報永遠用成交 K 線。轉來源唔會郁已經有嘅倉同掛單，但之後會用新 K 線管理。</p>
     <label>SMC Trader 掃<select data-cfg="smcScope">${[['watch', '所有 watch 緊嘅股（減剔走）'], ['picks', '淨係心水牆']].map(([v, l]) => `<option value="${v}" ${c.smcScope === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <h3>新聞 / 業績</h3>
+    <label>SEC User-Agent（你嘅名同 email，例如 "Fred Yu you@example.com"）<input data-cfg="secUserAgent" value="${esc(c.secUserAgent ?? '')}" placeholder="留空 = 唔讀 SEC 8-K"></label>
+    <p class="muted">SEC 要自動程式表明身份先可以讀 8-K（業績公告）。填咗之後雲端 trader 會讀；只會存喺你私人 data repo 嘅設定入面。Yahoo 新聞標題唔使填。瀏覽器讀唔到 Yahoo / SEC（冇 CORS），所以新聞由雲端讀。回測要業績日子，就喺 repo Settings → Variables 加 <code>SEC_USER_AGENT</code>。</p>
     <h3>3D 房</h3><label>滑鼠視角<select data-look>${[['follow', '跟住滑鼠位置（唔使撳）'], ['fast', '跟住滑鼠位置，轉得多啲'], ['drag', '淨係拖住先轉']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <p class="muted">跟住滑鼠：視線跟 cursor 喺畫面嘅位置，cursor 擺返正中（有個細圈）就望返正前面，所以 cursor 走遠咗都唔會迷失方向；擺去左右最邊就繼續轉。C 將視線擺返水平。撳一下照樣可以揀枱同牆。</p>
     <p class="muted">Esc（乜都冇開嘅時候）定住視角；再按 Esc 就再跟滑鼠。</p>
@@ -595,6 +630,7 @@ $('#panel').addEventListener('change', e => {
   if (['always', 'exclude'].includes(k)) v = String(v).toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
   else if (k === 'smcScope') v = v === 'picks' ? 'picks' : 'watch';
   else if (k === 'pmrSource' || k === 'smcSource') v = v === 'mark' ? 'mark' : 'trade';
+  else if (k === 'secUserAgent') v = String(v).trim().slice(0, 120);
   else if (k === 'timeExitMin' && String(v).trim() === '') v = null;
   else if (typeof v === 'string') { v = Number(v); if (!Number.isFinite(v)) return; }
   mutate(s => { s.cfg[k] = v; });

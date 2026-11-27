@@ -2,6 +2,9 @@
 // Paper only: fills, stops and targets are simulated on completed Aster 1m bars.
 import { MIN, PMR_PRESETS, PMR_PRESET_DEFAULT, PMR_PRESET_REV, Scanner, fiveMinute, intel } from './pmr.mjs';
 import { postmortem } from './postmortem.mjs';
+import { autoLearn, learnSummary, learningRows } from './learn.mjs';
+import { newsTag } from './news.mjs';
+import { timeMachine } from './timemachine.mjs';
 import { grade, learn, markCheck, preTrade, ruleKey, timeExitMs } from './reviewer.mjs';
 
 export const START = 1000;
@@ -42,7 +45,7 @@ export const pickInput = s => ({ board: s.board, pins: s.pins, skips: s.skips, h
 export function freshState() {
   return { v: 1, cfg: { ...DEFAULT_CFG }, acct: { start: START, balance: START, equity: START, peak: START, maxDD: 0 },
     seen: {}, orders: [], positions: [], trades: [], decisions: [], events: [], intel: [], reviews: {},
-    rules: { active: [], decided: {}, proposals: [] }, scan: [], board: [], cloud: null, lastCycle: null,
+    rules: { active: [], decided: {}, proposals: [], log: [] }, learn: null, scan: [], board: [], cloud: null, lastCycle: null,
     picks: [], pins: [], skips: [], marks: {}, market: null };
 }
 
@@ -57,7 +60,7 @@ export function normalize(state) {
     applyPmrPreset(s.cfg, PMR_PRESET_DEFAULT); s.cfg.presetRev = PMR_PRESET_REV;
   }
   s.acct = Object.assign(base.acct, state?.acct ?? {});
-  s.rules = Object.assign({ active: [], decided: {}, proposals: [] }, state?.rules ?? {});
+  s.rules = Object.assign({ active: [], decided: {}, proposals: [], log: [] }, state?.rules ?? {});
   for (const k of ['picks', 'pins', 'skips']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.marks || typeof s.marks !== 'object' || Array.isArray(s.marks)) s.marks = {};
   if (s.smc && typeof s.smc === 'object') for (const k of ['trades', 'decisions']) if (!Array.isArray(s.smc[k])) s.smc[k] = [];
@@ -184,6 +187,9 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     const openNotional = state.positions.reduce((s, p) => s + p.entry * p.qty, 0) + state.orders.reduce((s, o) => s + o.entry * o.qty, 0);
     const mk = markCheck(plan, state.marks[plan.symbol]);
     plan.marks = mk.summary;
+    // Time Machine and news: record-only inputs, also features the Reviewer learns from (core/learn.mjs).
+    plan.tm = market.bars5?.[plan.symbol] ? timeMachine(plan, market.bars5[plan.symbol], { n: 5000 }) : null;
+    plan.news = market.news?.[plan.symbol] ? newsTag(market.news[plan.symbol], plan.signalAt) : null;
     const ex = state.market?.exposure;
     plan.market = ex ? { rec: ex.recommendation, ceiling: ex.ceiling, breadth: state.market.breadth?.zone ?? null, uptrend: state.market.uptrend?.zone ?? null, at: state.market.at } : null;
     const decision = !cfg.on ? { ok: false, reason: 'TRADING_OFF' } : cfg.picksOnly && !picked.has(plan.symbol) ? { ok: false, reason: 'NOT_IN_PICKS' }
@@ -213,6 +219,15 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
   state.acct.maxDD = Math.max(state.acct.maxDD, (state.acct.peak - equity) / state.acct.peak);
   state.rules.proposals = learn(state.trades, state.reviews, { ...state.rules.decided,
     ...Object.fromEntries(state.rules.active.map(r => [ruleKey(r), 'active'])) });
+  // Self-learning (Fred, 2026-11-27): learn from the backtest sample, live trades and replayed declines; auto rules go live at once.
+  if (market.learn && !(state.learn?.t > market.learn.t)) state.learn = market.learn;
+  const rows = learningRows(state);
+  const res = autoLearn(rows, state.rules.active, state.rules.decided, { now });
+  state.rules.active = res.active;
+  for (const r of res.added) { state.rules.log.unshift({ t: now, kind: 'learned', key: ruleKey(r), evidence: r.evidence }); event(state, now, 'reviewer', 'LEARNED', `${r.value} · ${r.evidence}`); }
+  for (const r of res.retired) { state.rules.log.unshift({ t: now, kind: 'retired', key: ruleKey(r), evidence: r.why }); event(state, now, 'reviewer', 'RETIRED', `${r.value} · ${r.why}`); }
+  state.rules.log = state.rules.log.slice(0, 50);
+  state.rules.learnInfo = { at: now, ...learnSummary(rows), split: res.split ?? null };
 
   const scanEvents = Object.values(scanners).flatMap(sc => sc.events.filter(e => e.t > now - 6 * 60 * MIN));
   const merged = [...state.events.filter(e => e.agent === 'trader' || e.agent === 'reviewer' && e.title !== 'SKIPPED'), ...scanEvents];
@@ -229,6 +244,10 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
 }
 
 // Strip chart payloads before saving to the shared data repo.
+// Symbols close to a PMR proposal: they get 60 days of 5m bars (Time Machine) and news before the next cycle.
+const NEAR = new Set(['WAIT_RETEST', 'POI_TOUCHED', 'LTF_CONFIRMED', 'QUALIFIED']);
+export const nearProposal = state => (state.scan ?? []).filter(s => NEAR.has(s.status)).map(s => s.symbol);
+
 export function persistable(state) {
   const { scan, ...rest } = state;
   return { ...rest, scan: scan.map(({ h1, m15, m5, ...s }) => s) };

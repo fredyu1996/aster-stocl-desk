@@ -1,14 +1,16 @@
 name: backtest
-# Nightly backtest of both paper traders (PMR + SMC) on the top 10 stock perps over 180 days. REPORT ONLY: it never touches the
-# live accounts. The report goes to branch `backtest-report` of this public repo (no secrets needed); the desk's 7 Backtest
+# Nightly backtest of both paper traders on the top 20 stock perps since listing: PMR on mark-price klines, SMC on traded
+# klines (the live defaults). REPORT ONLY: it never touches the live accounts; its PMR trades (pmr.sample) are the live
+# Reviewer's learning sample (core/learn.mjs). The report goes to branch `backtest-report` of this public repo (no secrets needed); the desk's 7 Backtest
 # panel reads it from raw.githubusercontent.com. GitHub's cron can be late or skipped; run it by hand from the Actions tab too.
 on:
   workflow_dispatch:
     inputs:
-      days: { description: "Days, or 'max' = from each symbol's listing", default: '180' }
-      top: { description: 'Top N stock perps by 24h volume', default: '10' }
+      days: { description: "Days, or 'max' = from each symbol's listing", default: 'max' }
+      top: { description: 'Top N stock perps by 24h volume', default: '20' }
       symbols: { description: 'Comma list instead of top N (e.g. NVDAUSDT,TSLAUSDT)', default: '' }
-      source: { description: "'trade' = traded 1m klines, 'mark' = mark-price 1m klines (full history)", default: 'trade' }
+      source: { description: "PMR bars: 'mark' = mark-price 1m klines, 'trade' = traded 1m klines", default: 'mark' }
+      smc_source: { description: "SMC bars: 'trade' or 'mark'", default: 'trade' }
       variants: { description: "PMR variants table ('0' = skip, faster)", default: '1' }
   schedule:
     - cron: '17 9 * * *'
@@ -35,10 +37,13 @@ jobs:
           restore-keys: bt-bars-
       - run: node --max-old-space-size=6000 bot/backtest.mjs
         env:
-          BT_DAYS: ${{ inputs.days || '180' }}
-          BT_TOP: ${{ inputs.top || '10' }}
+          BT_DAYS: ${{ inputs.days || 'max' }}
+          BT_TOP: ${{ inputs.top || '20' }}
           BT_SYMBOLS: ${{ inputs.symbols || '' }}
-          BT_SOURCE: ${{ inputs.source || 'trade' }}
+          BT_SOURCE: ${{ inputs.source || 'mark' }}
+          BT_SMC_SOURCE: ${{ inputs.smc_source || 'trade' }}
+          # Optional repository variable "Your Name you@example.com" (SEC asks automated clients to identify themselves).
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           BT_VARIANTS: ${{ inputs.variants || '1' }}
           BT_CACHE: .bt-cache
           BT_OUT: out/stock-backtest.json

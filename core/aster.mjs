@@ -74,7 +74,24 @@ export async function fetchBars(symbol, { since = 0, minutes = HISTORY_MIN, now 
 }
 
 // One snapshot of everything a cycle needs. `cache` (browser) keeps bars between calls so only new minutes are fetched.
-export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.now(), cache } = {}) {
+// 60 days of completed 5m bars (t = close time) for the Time Machine.
+export async function fetchBars5(symbol, { since = 0, days = 60, now = Date.now(), get = asterGet, source = 'trade' } = {}) {
+  const M5 = 5 * MIN, lastClosed = Math.floor(now / M5) * M5;
+  const out = [];
+  for (let start = Math.max(since, lastClosed - days * 864e5), guard = 0; start < lastClosed && guard < 14; guard++) {
+    const rows = await get(KLINES[source] ?? KLINES.trade, { symbol, interval: '5m', startTime: start, limit: 1500 });
+    if (!Array.isArray(rows) || !rows.length) break;
+    for (const k of rows) { const t = Number(k[0]) + M5; if (Number(k[6]) + 1 === t && t <= lastClosed && t > since) out.push({ t, o: +k[1], h: +k[2], l: +k[3], c: +k[4] }); }
+    const next = Number(rows.at(-1)[0]) + M5;
+    if (rows.length < 1500 || next <= start) break;
+    start = next;
+  }
+  return out;
+}
+
+// near = symbols close to a PMR proposal (core/desk.mjs nearProposal): they also get 60 days of 5m bars (Time Machine) and
+// news (core/news.mjs). Both are record-only inputs; a failure leaves them out.
+export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.now(), cache, near = [], newsLoader = null } = {}) {
   const [info, tickers, books, premium] = await Promise.all([
     cache?.info && now - cache.infoAt < 3600_000 ? cache.info : get('/fapi/v1/exchangeInfo'),
     get('/fapi/v1/ticker/24hr'), get('/fapi/v1/ticker/bookTicker'), get('/fapi/v1/premiumIndex'),
@@ -100,7 +117,21 @@ export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.no
   const book = Object.fromEntries(books.filter(b => universe.specs[b.symbol]).map(b => [b.symbol, { bid: +b.bidPrice, ask: +b.askPrice, t: b.time }]));
   const funding = Object.fromEntries(premium.filter(p => universe.specs[p.symbol]).map(p => [p.symbol,
     { rate: +p.lastFundingRate, next: +p.nextFundingTime, mark: +p.markPrice }]));
-  return { t: now, universe, bars, smcBars: barsBy[smcSource], tradeBars: barsBy.trade, pmrSource, smcSource, book, funding, info };
+  const bars5 = {}, news = {};
+  for (const symbol of [...new Set(near)].filter(s => universe.specs[s]).slice(0, 6)) {
+    try {
+      const old = cache?.bars5?.[symbol]?.source === pmrSource ? cache.bars5[symbol].bars : [];
+      const fresh = await fetchBars5(symbol, { since: old.at(-1)?.t ?? 0, now, get, source: pmrSource });
+      bars5[symbol] = old.concat(fresh).filter(b => b.t > now - 61 * 864e5);
+      if (cache) (cache.bars5 ??= {})[symbol] = { source: pmrSource, bars: bars5[symbol] };
+    } catch { /* Time Machine just reports unknown */ }
+    if (newsLoader) {
+      const hit = cache?.news?.[symbol];
+      news[symbol] = hit && now - hit.at < 15 * MIN ? hit : await newsLoader(symbol).catch(() => null);
+      if (cache && news[symbol]) (cache.news ??= {})[symbol] = news[symbol];
+    }
+  }
+  return { t: now, universe, bars, smcBars: barsBy[smcSource], tradeBars: barsBy.trade, pmrSource, smcSource, bars5, news, book, funding, info };
 }
 
 // Chart-only klines for the Picks wall. t = open time; `closed` is false for the forming candle.

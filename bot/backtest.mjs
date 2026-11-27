@@ -8,7 +8,8 @@
 // funding, and symbols delisted since (the list is today's top by volume).
 // Env: BT_DAYS (default 180; 'max' = from each symbol's listing), BT_TOP (default 10), BT_OUT (default report/stock-backtest.json),
 // BT_SYMBOLS (comma list, optional), BT_SOURCE ('trade' = traded 1m klines, default; 'mark' = mark-price 1m klines),
-// BT_VARIANTS ('0' skips the PMR variants table, for long runs), BT_CACHE (dir for fetched bars, optional), BT_SMC ('0' skips SMC).
+// BT_VARIANTS ('0' skips the PMR variants table, for long runs), BT_CACHE (dir for fetched bars, optional), BT_SMC ('0' skips SMC),
+// BT_SMC_SOURCE (bars for the SMC Trader, default = BT_SOURCE), SEC_USER_AGENT (earnings dates for the learning sample).
 // Data (checked 2026-11-26): Aster stock perps trade thinly, so 36–97 % of traded 1m candles are flat (no trades) even in US
 // hours, while mark-price candles move every minute and go back to each listing (NVDA / TSLA / AAPL / AMZN / META / MSFT from
 // 2025-07). Mark candles have no volume and fills in a thin book can be worse than the mark, so 'mark' is a price-path study.
@@ -17,9 +18,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isStock, klineBar, specOf } from '../core/aster.mjs';
 import { DEFAULT_CFG } from '../core/desk.mjs';
-import { MIN, PMR_PRESETS, PMR_W2, Scanner } from '../core/pmr.mjs';
+import { MIN, PMR_PRESETS, PMR_W2, Scanner, fiveMinute } from '../core/pmr.mjs';
 import { simulatePlan } from '../core/postmortem.mjs';
-import { preTrade } from '../core/reviewer.mjs';
+import { features, preTrade } from '../core/reviewer.mjs';
+import { loadNews, newsTag } from '../core/news.mjs';
+import { timeMachine } from '../core/timemachine.mjs';
 import { framesFrom1m, M5, makeCore, runStep, smcSource, smcTrade, SMC_ADJ, SMC_CFG, SMC_SOURCE } from '../core/smc.mjs';
 
 const API = 'https://fapi.asterdex.com', DAY = 864e5, WARM = 5 * DAY;
@@ -55,12 +58,14 @@ async function cachedBars(symbol, from, to, source) {
   const dir = process.env.BT_CACHE;
   if (!dir) return bars1m(symbol, from, to, aster, source);
   const file = path.join(dir, `${source}-${symbol}.json`);
-  let have = [];
-  try { have = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* no cache yet */ }
-  if (!have.length || have[0].t > from + 2 * MIN) have = await bars1m(symbol, from, to, aster, source);
+  // { from, bars }: `from` is the start asked for, so a symbol listed after it is not refetched every run.
+  let c = null;
+  try { c = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* no cache yet */ }
+  let have = Array.isArray(c?.bars) ? c.bars : [];
+  if (!have.length || !(c.from <= from)) { have = await bars1m(symbol, from, to, aster, source); c = { from }; }
   else if (have.at(-1).t < to) have = have.concat(await bars1m(symbol, have.at(-1).t, to, aster, source));
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(have));
+  fs.writeFileSync(file, JSON.stringify({ from: c.from, bars: have }));
   return have.filter(b => b.t > from && b.t <= to);
 }
 
@@ -84,7 +89,9 @@ export function report(rows, split) {
 }
 
 // ---------- PMR ----------
-export function pmrRun(data, { cfg = DEFAULT_CFG, from, specs, params = cfg.pmr, funnel = null }) {
+// sample: also return each filled trade as a learning row for the live Reviewer (core/learn.mjs), with its Time Machine
+// odds from the 60 days of bars before the signal and its earnings tag when SEC filings were loaded (`filings`).
+export function pmrRun(data, { cfg = DEFAULT_CFG, from, specs, params = cfg.pmr, funnel = null, sample = false, filings = {} }) {
   const plans = [];
   for (const [s, bars] of Object.entries(data)) {
     const sc = new Scanner(s, bars, { tickSize: specs[s]?.tickSize, params });
@@ -93,6 +100,7 @@ export function pmrRun(data, { cfg = DEFAULT_CFG, from, specs, params = cfg.pmr,
   }
   plans.sort((a, b) => a.signalAt - b.signalAt);
   let equity = 1000, open = [];
+  const fives = {}, learnRows = [];
   const rows = [], declined = {}, settle = t => { for (const o of open.filter(o => o.until <= t)) equity += o.pnl; open = open.filter(o => o.until > t); };
   for (const p of plans) {
     settle(p.signalAt);
@@ -104,11 +112,17 @@ export function pmrRun(data, { cfg = DEFAULT_CFG, from, specs, params = cfg.pmr,
     if (!sim.filled) { open.push({ symbol: p.symbol, until: Math.min(p.expiresAt, p.endedAt ?? Infinity), pnl: 0, notional: d.size.notional }); declined[sim.reason] = (declined[sim.reason] ?? 0) + 1; continue; }
     const pnl = sim.r * d.size.riskUSDT;
     open.push({ symbol: p.symbol, until: sim.exitAt, pnl, notional: d.size.notional });
+    if (sample) {
+      const five = (fives[p.symbol] ??= fiveMinute(data[p.symbol]));
+      const tm = timeMachine(p, five, { n: 2000 });
+      const news = filings[p.symbol] ? { ...newsTag({ headlines: [], filings: filings[p.symbol] }, p.signalAt), tag: 'unknown' } : null;
+      learnRows.push({ s: p.symbol, t: p.signalAt, R: r3(sim.r), f: features({ ...p, tm, news }) });
+    }
     rows.push({ s: p.symbol, side: p.direction === 1 ? 'L' : 'S', t0: sim.entryAt, t1: sim.exitAt, R: r3(sim.r), pnl: r3(pnl), why: sim.reason,
       entry: sim.entry, exit: sim.exit, stop: p.stop, target: p.target, pattern: p.pattern?.type, poi: p.poi?.type, grade: p.grade, maxR: r3(sim.mfe) });
   }
   settle(Infinity);
-  return { rows, proposals: plans.length, declined, open: open.filter(o => o.until === Infinity).length, equity: r3(equity) };
+  return { rows, proposals: plans.length, declined, open: open.filter(o => o.until === Infinity).length, equity: r3(equity), sample: sample ? learnRows : null };
 }
 
 // PMR variants studied on 2026-11-25. Variants without `rr` keep v1.4's net R:R floor. 'all loosened, target 2.5R' =
@@ -156,7 +170,7 @@ export async function smcRun(data, { from, to, exInfo, src }) {
   return { rows, open: h.positions().length, equity: r3(h.equity()), skips: Object.fromEntries(Object.entries(skips).sort((a, b) => b[1] - a[1]).slice(0, 12)) };
 }
 
-export async function run({ days = 180, top = 10, symbols, now = Date.now(), source = 'trade', variants: withVariants = true } = {}) {
+export async function run({ days = 180, top = 10, symbols, now = Date.now(), source = 'trade', smcSource = source, variants: withVariants = true } = {}) {
   const T0 = Date.now(), END = Math.floor(now / M5) * M5, full = days === 'max';
   let W0 = full ? Date.UTC(2025, 6, 1) : END - days * DAY;
   const [exInfo, tickers] = await Promise.all([aster('/fapi/v1/exchangeInfo'), aster('/fapi/v1/ticker/24hr')]);
@@ -179,13 +193,23 @@ export async function run({ days = 180, top = 10, symbols, now = Date.now(), sou
   // 'max': the window starts at the earliest bar fetched (plus warm-up); the halves split that window.
   if (full) W0 = Math.min(...Object.values(data).map(b => b[0].t)) + WARM;
   const split = W0 + (END - W0) / 2;
-  const pmr = pmrRun(data, { from: W0, specs });
+  // Earnings dates from SEC 8-K filings (item 2.02) when SEC_USER_AGENT is set (a repository variable in the workflow).
+  const filings = {};
+  if (process.env.SEC_USER_AGENT) for (const s of Object.keys(data)) { const n = await loadNews(s, { userAgent: process.env.SEC_USER_AGENT }).catch(() => null); if (n?.filings) filings[s] = n.filings; }
+  const pmr = pmrRun(data, { from: W0, specs, sample: true, filings });
   log(`PMR: ${pmr.proposals} proposals, ${pmr.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
   const variants = withVariants ? pmrVariants(data, { from: W0, specs, split }) : null;
-  const smc = process.env.BT_SMC === '0' ? { rows: [], open: 0, equity: null, skips: {} } : await smcRun(data, { from: W0, to: END, exInfo });
+  // The SMC Trader can run on another bar source than the PMR Trader (live default: PMR mark, SMC traded klines).
+  let smcData = data;
+  if (process.env.BT_SMC !== '0' && smcSource !== source) {
+    smcData = {};
+    for (const s of Object.keys(data)) { const b = await cachedBars(s, W0 - WARM, END, smcSource); if (b.length >= 1000) smcData[s] = b; }
+    log(`SMC bars (${smcSource}) loaded`);
+  }
+  const smc = process.env.BT_SMC === '0' ? { rows: [], open: 0, equity: null, skips: {} } : await smcRun(smcData, { from: W0, to: END, exInfo });
   log(`SMC: ${smc.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
-  return { v: 1, t: Date.now(), from: W0, to: END, days: Math.round((END - W0) / DAY), source, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
-    pmr: { ...report(pmr.rows, split), variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { preset: DEFAULT_CFG.pmrPreset, riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
+  return { v: 1, t: Date.now(), from: W0, to: END, days: Math.round((END - W0) / DAY), source, smcSource, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
+    pmr: { ...report(pmr.rows, split), sample: { preset: DEFAULT_CFG.pmrPreset, source, sec: Object.keys(filings).length, rows: pmr.sample }, variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { preset: DEFAULT_CFG.pmrPreset, riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
     smc: { ...report(smc.rows, split), open: smc.open, equity: smc.equity, skips: smc.skips, source: SMC_SOURCE, adj: SMC_ADJ },
     notes: ['Report only: never changes live rules or accounts.', 'Every symbol counts as a pick; Fred\'s marks, spread and funding are not modelled.',
       'Symbols are today\'s top stock perps by 24h volume, so delisted ones are missing. Symbols listed less than the window only count from their first bar.',
@@ -197,7 +221,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const out = process.env.BT_OUT || 'report/stock-backtest.json';
   try {
     const r = await run({ days: process.env.BT_DAYS === 'max' ? 'max' : +process.env.BT_DAYS || 180, top: +process.env.BT_TOP || 10,
-      symbols: process.env.BT_SYMBOLS?.split(',').filter(Boolean), source: process.env.BT_SOURCE === 'mark' ? 'mark' : 'trade', variants: process.env.BT_VARIANTS !== '0' });
+      symbols: process.env.BT_SYMBOLS?.split(',').filter(Boolean), source: process.env.BT_SOURCE === 'mark' ? 'mark' : 'trade',
+      smcSource: process.env.BT_SMC_SOURCE === 'mark' ? 'mark' : process.env.BT_SMC_SOURCE === 'trade' ? 'trade' : undefined, variants: process.env.BT_VARIANTS !== '0' });
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, JSON.stringify(r));
     const f = s => s.n ? `n ${s.n} win ${s.win}% avg ${s.avgR >= 0 ? '+' : ''}${s.avgR}R tot ${s.totR}R maxDD ${s.maxDD}R` : 'n 0';

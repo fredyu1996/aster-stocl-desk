@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { autoLearn } from '../core/learn.mjs';
 import { DEFAULT_CFG, applyPmrPreset, choosePicks, cycle, freshState, normalize, persistable } from '../core/desk.mjs';
 import { PMR_PRESETS } from '../core/pmr.mjs';
 import { MIN, Scanner } from '../core/pmr.mjs';
@@ -108,14 +109,12 @@ test('reviewer declines low net R:R, wide spreads and approved-rule matches', ()
   assert.ok(e.netRR < 4 && e.netRR > 3);
 });
 
-test('learns rule proposals only from losing buckets in both halves, or from three matching reviews', () => {
+test('rule proposals come from three matching reviews only; trade buckets are auto-learned instead', () => {
   const trades = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, r: -0.8, exitAt: i, plan: plan({ pattern: { type: 'HNS' } }) }));
-  const props = learn(trades, {});
-  assert.ok(props.some(p => p.rule === 'avoidPattern' && p.value === 'HNS'));
-  assert.equal(learn(trades.slice(0, 5), {}).length, 0);
+  assert.equal(learn(trades, {}).length, 0);
   const reviews = Object.fromEntries(trades.slice(0, 3).map(t => [t.id, { a: ['skip'], b: ['poi'] }]));
   assert.ok(learn(trades.slice(0, 3), reviews).some(p => p.rule === 'avoidPoi' && p.value === 'FVG'));
-  assert.equal(learn(trades, {}, { 'avoidPattern:HNS': 'rejected' }).some(p => p.value === 'HNS'), false);
+  assert.equal(learn(trades.slice(0, 3), reviews, { 'avoidPoi:FVG': 'rejected' }).length, 0);
 });
 
 test('scanner is causal: a prefix of the bars yields exactly the prefix of the events', () => {
@@ -297,11 +296,28 @@ test('cycle declines a proposal against Fred\'s marks and records his marks on t
   assert.equal(ok.orders[0].plan.marks.confluence, true);
 });
 
-test('Reviewer proposes "confluence only" when trades without Fred\'s zone lose in both halves', () => {
-  const trades = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, r: -0.8, exitAt: T0 + i * 60 * MIN,
-    plan: plan({ pattern: { type: ['FLAG', 'TRIANGLE', 'HNS', 'DOUBLE_TOP', 'INVERSE_HNS'][i % 5] }, direction: i % 2 ? 1 : -1,
-      poi: { type: i % 2 ? 'OB' : 'FVG' }, grade: 'A+', signalAt: Date.parse('2026-11-23T16:00:00Z') }) }));
-  assert.ok(learn(trades, {}).some(p => p.rule === 'marksConfluenceOnly'));
+test('self-learning: a bucket that loses in both halves and worse than the rest is auto-activated; removed keys stay out', () => {
+  // 40 rows over time: NVDA night signals lose in both halves, everything else wins a little.
+  const rows = Array.from({ length: 40 }, (_, i) => {
+    const bad = i % 3 === 0;
+    return { t: T0 + i * 864e5, R: bad ? -1 : 0.4, f: { symbol: bad ? 'NVDA' : 'TSLA', hour: bad ? 'night' : 'mid', side: i % 2 ? 'long' : 'short' }, src: i < 30 ? 'bt' : 'live' };
+  });
+  const out = autoLearn(rows, [], {}, { now: T0 });
+  const keys = out.added.map(r => r.value).sort();
+  assert.deepEqual(keys, ['hour=night', 'symbol=NVDA']);
+  assert.ok(out.added.every(r => r.auto && r.rule === 'avoid' && /前半/.test(r.evidence)));
+  // Fred removed one: it is never learned again.
+  assert.deepEqual(autoLearn(rows, [], { 'avoid:symbol=NVDA': 'removed' }).added.map(r => r.value), ['hour=night']);
+  // The rule gates a matching proposal through preTrade.
+  const cfg = v14().cfg, ctx = { cfg, equity: 1000, openNotional: 0, openCount: 0, holding: false, spec, book: null, funding: null };
+  assert.match(preTrade(plan({ signalAt: Date.parse('2026-11-24T05:00:00Z') }), { ...ctx, active: out.added }).reason, /RULE · 唔做/);
+  // Too few rows, or a bucket that only loses in one half: nothing learned.
+  assert.equal(autoLearn(rows.slice(0, 15), []).added.length, 0);
+  const oneHalf = rows.map((r, i) => (i >= 20 && r.f.symbol === 'NVDA' ? { ...r, R: 1 } : r));
+  assert.equal(autoLearn(oneHalf, []).added.length, 0);
+  // A learned rule whose bucket wins in the second half is retired.
+  const back = autoLearn(oneHalf, out.added);
+  assert.deepEqual(back.retired.map(r => r.value).sort(), ['hour=night', 'symbol=NVDA']);
 });
 
 test('postmortem replay gives the same fill, exit and R as the desk for an approved plan', () => {

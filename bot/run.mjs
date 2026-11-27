@@ -2,7 +2,9 @@
 // State comes from the private data repo (DATA_TOKEN, DATA_REPO, DATA_BRANCH) or local files (STATE_IN / STATE_OUT).
 import { readFile, writeFile } from 'node:fs/promises';
 import { loadMarket } from '../core/aster.mjs';
-import { cycle, normalize, persistable } from '../core/desk.mjs';
+import { cycle, nearProposal, normalize, persistable } from '../core/desk.mjs';
+import { LEARN_EVERY, fetchLearnSample } from '../core/learn.mjs';
+import { loadNews } from '../core/news.mjs';
 import { loadPosture } from '../core/regime.mjs';
 import { smcCore, withSmc } from '../core/smc.mjs';
 import { store, update } from '../core/github.mjs';
@@ -26,7 +28,10 @@ async function step(prev) {
   // A browser that is trading (it cycles every 60 s) keeps the desk; once it has been silent for 5 min (page closed,
   // laptop asleep) the cloud takes over. "Hand back to the cloud" (by: 'handback') lets the cloud run at once.
   if (base.lastCycle?.by === 'browser' && now - base.lastCycle.t < 5 * 60_000 && !env.FORCE) return null;
-  const market = await loadMarket(base.cfg, held(base), { now });
+  const ua = base.cfg.secUserAgent || env.SEC_USER_AGENT || '';
+  const market = await loadMarket(base.cfg, held(base), { now, near: nearProposal(base), newsLoader: s => loadNews(s, { userAgent: ua, now }) });
+  // The Reviewer's learning sample (nightly backtest trades) is re-read every 6 h.
+  if (!(now - (base.learn?.at ?? 0) < LEARN_EVERY)) market.learn = await fetchLearnSample(env.GITHUB_REPOSITORY || 'fredyu1996/aster-stocl-desk', { now }).catch(e => { console.error('learn sample:', e.message); return null; });
   // Market posture (breadth + uptrend CSVs) changes at most twice a day: refresh hourly.
   if (!(now - (base.market?.at ?? 0) < 60 * 60_000)) market.posture = await loadPosture({ at: now }).catch(e => ({ at: now, errors: [e.message] }));
   const core = await smcCore(market.info).catch(e => { console.error('SMC core:', e.message); return null; });
