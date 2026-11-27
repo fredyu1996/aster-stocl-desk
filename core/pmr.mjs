@@ -175,14 +175,19 @@ export const TERMINAL = new Set(['SKIPPED', 'EXPIRED', 'CANCELLED']);
 export const PMR_DEFAULT = Object.freeze({ poiWaitMin: 30, poiAfterBars: 2, poiDistAtr: 0.5, retestMin: 120, mssMin: 45, fvgMin: 15, dispAtr: 1.2, entryWindowMin: 60, targetR: null });
 // Live PMR presets (Settings → PMR 版本). Fred, 2026-11-26: 「放寬條件」, with a switch; trade the loosened + 2.5R target
 // version on paper now (backtest top 10 × 180 d before the switch: n 14, −0.7R, halves −2.8R n 8 / +2.1R n 6).
-// A preset sets cfg.pmr (Scanner params) and cfg.minNetRR together; cfg.pmrPreset names it.
+// A preset sets cfg.pmr (Scanner params), cfg.minNetRR and cfg.timeExitMin together; cfg.pmrPreset names it.
 export const PMR_W2 = Object.freeze({ poiWaitMin: 60, retestMin: 240, mssMin: 90, fvgMin: 30, entryWindowMin: 120 });
 export const PMR_PRESETS = Object.freeze({
-  'v1.4': { label: 'GMS PMR v1.4 原版', pmr: {}, minNetRR: 2.0 },
-  'loose-2.5R': { label: '放寬 + 固定 2.5R target', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, minNetRR: 1.5 },
-  loose: { label: '淨係放寬（measured-move target）', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0 }, minNetRR: 1.5 },
+  'v1.4': { label: 'GMS PMR v1.4 原版', pmr: {}, minNetRR: 2.0, timeExitMin: 90 },
+  'loose-2.5R': { label: '放寬 + 固定 2.5R target', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, minNetRR: 1.5, timeExitMin: 90 },
+  loose: { label: '淨係放寬（measured-move target）', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0 }, minNetRR: 1.5, timeExitMin: 90 },
+  // Fred, 2026-11-26: 「直接用呢個」 after the mark-price time-exit study (12 stock perps × 499 d: n 20, +12.3R, PF 3.1,
+  // halves +2.8R n 4 / +9.5R n 16, median hold 13 h, funding not modelled). timeExitMin null = held until stop or target.
+  'loose-1.5R-hold': { label: '放寬 + 1.5R target · 冇時間離場', pmr: { ...PMR_W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 1.5 }, minNetRR: 1.2, timeExitMin: null },
 });
-export const PMR_PRESET_DEFAULT = 'loose-2.5R';
+export const PMR_PRESET_DEFAULT = 'loose-1.5R-hold';
+// Bump when Fred moves live paper to a new default: normalize re-applies the default once to accounts saved with an older rev.
+export const PMR_PRESET_REV = 2;
 const AGENT = { PATTERN_CONFIRMED: 'screener', WAIT_POI: 'screener', WAIT_RETEST: 'screener', POI_TOUCHED: 'trader',
   LTF_CONFIRMED: 'trader', QUALIFIED: 'trader', SKIPPED: 'reviewer', EXPIRED: 'reviewer', CANCELLED: 'reviewer' };
 
@@ -334,7 +339,10 @@ export class Scanner {
   }
 }
 
-// Taker-flow and volume intel from completed 5m candles (Market Intel desk).
+// Completed 5m candles from 1m bars (for intel on traded klines when the PMR Trader runs on mark-price klines).
+export const fiveMinute = bars => [...aggregate(bars, 5).values()];
+
+// Taker-flow and volume intel from completed 5m candles (Market Intel desk). `scanner` = a Scanner or { symbol, history: { 5 } }.
 export function intel(scanner) {
   const out = [];
   const five = scanner.history[5];

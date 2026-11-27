@@ -44,6 +44,7 @@ const world = createWorld($('#scene'), {
   onPick(id, uv) {
     if (id === 'board') { openWall(world.boardAt(uv)); return; }
     if (id === 'reviews') { const t = world.reviewAt(uv); open(t ? `review:${t}` : 'reviewer', 'reviews'); return; }
+    if (id === 'positions') { open(world.positionsAt(uv) ?? 'trader', 'positions'); return; }
     const to = { positions: 'trader', rules: 'reviewer' }[id];
     open(to ?? id, to ? id : undefined);
   },
@@ -96,7 +97,7 @@ function render() {
     <b>Aster Stock Desk</b>
     <span>淨值 <b>${money(a.equity)}</b> <i class="${a.equity >= a.start ? 'up' : 'down'}">${pct((a.equity / a.start - 1) * 100)}</i></span>
     <span>心水 <b>${state.picks.length}</b> · 持倉 ${state.positions.length} · 掛單 ${state.orders.length} · 交易 ${state.trades.length}</span>
-    <span>PMR <b>${esc(PMR_PRESETS[state.cfg.pmrPreset]?.label ?? '自訂')}</b></span>
+    <span>PMR <b>${esc(PMR_PRESETS[state.cfg.pmrPreset]?.label ?? '自訂')}</b> · ${SRC[state.cfg.pmrSource] ?? '成交'} K 線</span>
     <span>行情 <b class="${status.feed === '即時' ? 'up' : 'warn'}">${esc(status.feed)}</b>${status.at ? ` · ${hhmm(status.at)}` : ''}</span>
     ${syncChip()}
     ${status.note ? `<span class="warn">${esc(status.note)}</span>` : ''}`;
@@ -406,6 +407,7 @@ function intel() {
     ${table(['時間', '類型', '訊號', '詳情'], items)}<h3>股票永續 24h 成交額排名</h3>${table(['股票', '現價', '24h', '成交額'], movers)}`;
 }
 
+const SRC = { mark: 'Mark price', trade: '成交' };
 const money0 = n => Number.isFinite(n) ? money(n) : '—';
 const r2 = n => Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}R` : '—';
 function bucketTable(title, b) {
@@ -503,12 +505,14 @@ function backtestPanel() {
   loadBacktest();
   const d = bt.data;
   if (!d) return `<h2>回測</h2><p class="muted">${bt.err ? `未有報告（${esc(bt.err)}）。報告由每晚嘅 workflow「backtest」寫（Actions → backtest → Run workflow）。` : '載入緊最新報告…'}</p>`;
-  return `<h2>回測 · ${d.days} 日 · ${d.symbols.length} 隻股票永續</h2>
+  const flat = Object.entries(d.coverage ?? {}).filter(([, c]) => c.flatPct != null).map(([k, c]) => `${k.replace('USDT', '')} ${c.flatPct}%`);
+  return `<h2>回測 · ${d.days} 日 · ${d.symbols.length} 隻股票永續 · ${d.source === 'mark' ? 'Mark price K 線' : '成交 K 線'}</h2>
+    ${flat.length ? `<p class="${d.source === 'mark' ? 'muted' : 'warn'}">冇成交（平）嘅 1m K 線比例：${esc(flat.join(' · '))}${d.source === 'mark' ? '。Mark price 冇成交量，實際喺薄 book 成交可能差過 mark。' : '。比例高即係大部分時間冇成交，形態好難成立。'}</p>` : ''}
     <p class="muted">${new Date(d.from).toLocaleDateString('en-CA')} → ${new Date(d.to).toLocaleDateString('en-CA')} · ${new Date(d.t).toLocaleString('en-CA')} 跑 · ${esc(d.symbols.map(s => s.replace('USDT', '')).join(', '))}。
       只係報告：唔會改任何一個 trader。${esc(d.notes.slice(1).join(' '))}</p>
     ${btBlock(`PMR Trader（${esc(PMR_PRESETS[d.pmr.cfg?.preset]?.label ?? 'GMS PMR v1.4 原版')}）`, d.pmr)}${d.pmr.variants ? `<h3>PMR variants（只係報告；live 用緊嘅喺 ⚙ 設定揀）</h3>
       <p class="muted">v1.4 漏斗：${d.pmr.variants[0].funnel.breakouts} 次 1H 突破 → ${d.pmr.variants[0].funnel.poi} 個新鮮 15m zone → ${d.pmr.variants[0].funnel.retest} 次第一次回測 → ${d.pmr.variants[0].funnel.mss} 次 5m MSS → ${d.pmr.variants[0].funnel.proposals} 個 proposal。出到 proposal 嘅時候，大部分都過唔到 net R:R：等到 5m 入場形成，1H measured-move target 已經用咗大半。</p>
-      ${table(['Variant', 'Proposal', '交易', '勝率', '平均 R', '總 R', '前半', '後半'], d.pmr.variants.map(v => `<tr><td>${esc(v.name)}</td><td>${v.proposals}</td><td>${v.all.n}</td><td>${v.all.win == null ? '—' : `${v.all.win}%`}</td><td>${v.all.avgR ?? '—'}</td><td>${v.all.totR}R</td><td>${v.halves[0].totR}R (n ${v.halves[0].n})</td><td>${v.halves[1].totR}R (n ${v.halves[1].n})</td></tr>`))}` : ''}${btBlock('SMC Trader（crypto desk code，small-cap 設定）', d.smc)}`;
+      ${table(['Variant', '時間離場', '持倉中位', 'Proposal', '交易', '勝率', '平均 R', '總 R', '前半', '後半'], d.pmr.variants.map(v => `<tr><td>${esc(v.name)}</td><td>${v.timeExitMin === null ? '冇' : `${v.timeExitMin ?? 90} 分鐘`}</td><td>${v.holdMin == null ? '—' : v.holdMin >= 120 ? `${(v.holdMin / 60).toFixed(1)} 粒鐘` : `${Math.round(v.holdMin)} 分鐘`}</td><td>${v.proposals}</td><td>${v.all.n}</td><td>${v.all.win == null ? '—' : `${v.all.win}%`}</td><td>${v.all.avgR ?? '—'}</td><td>${v.all.totR}R</td><td>${v.halves[0].totR}R (n ${v.halves[0].n})</td><td>${v.halves[1].totR}R (n ${v.halves[1].n})</td></tr>`))}` : ''}${btBlock('SMC Trader（crypto desk code，small-cap 設定）', d.smc)}`;
 }
 
 const A_CHIPS = [['same', '照做'], ['skip', '唔做'], ['flip', '做反方向'], ['later', '遲啲 / 深啲入'], ['earlier', '早啲入'],
@@ -540,21 +544,24 @@ function review(id) {
 
 function settings() {
   const c = state.cfg;
-  const num = (k, label, step = 'any') => `<label>${label}<input type="number" step="${step}" data-cfg="${k}" value="${c[k]}"></label>`;
+  const num = (k, label, step = 'any', ph = '') => `<label>${label}<input type="number" step="${step}" data-cfg="${k}" value="${c[k] ?? ''}" placeholder="${ph}"></label>`;
   const preset = PMR_PRESETS[c.pmrPreset], P = { ...PMR_DEFAULT, ...c.pmr }, edited = preset && c.minNetRR !== preset.minNetRR;
   return `<h2>設定</h2>
     <h3>PMR 策略版本</h3>
     <label>PMR Trader 用<select data-pmr>${Object.entries(PMR_PRESETS).map(([k, p]) => `<option value="${k}" ${c.pmrPreset === k ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}${preset ? '' : '<option selected>自訂</option>'}</select></label>
-    <p class="muted">而家：displacement ≥ ${P.dispAtr} ATR · POI 距離 ≤ ${P.poiDistAtr} ATR · 回測 ≤ ${P.retestMin} 分鐘 · 5m MSS ≤ ${P.mssMin} 分鐘 · 入場窗 ${P.entryWindowMin} 分鐘 · target ${P.targetR ? `固定 ${P.targetR}R` : '1H measured move'} · net R:R ≥ ${c.minNetRR}${edited ? '（R:R 手動改過）' : ''}。
-    轉版本會一齊改 Scanner 參數同 net R:R 下限；已經掛咗嘅單同持倉照舊。放寬版喺回測（top 10 × 180 日）得 14 單、−0.7R，前後兩半 −2.8R（8 單）/ +2.1R（6 單）：樣本太細，係試驗，唔係結論。</p>
+    <p class="muted">而家：displacement ≥ ${P.dispAtr} ATR · POI 距離 ≤ ${P.poiDistAtr} ATR · 回測 ≤ ${P.retestMin} 分鐘 · 5m MSS ≤ ${P.mssMin} 分鐘 · 入場窗 ${P.entryWindowMin} 分鐘 · target ${P.targetR ? `固定 ${P.targetR}R` : '1H measured move'} · ${c.timeExitMin ? `${c.timeExitMin} 分鐘時間離場` : '冇時間離場（揸到 stop 或 target）'} · net R:R ≥ ${c.minNetRR}${edited ? '（R:R 手動改過）' : ''}。
+    轉版本會一齊改 Scanner 參數同 net R:R 下限；已經掛咗嘅單同持倉照舊。「放寬 + 1.5R · 冇時間離場」喺 mark price 回測（12 隻 × 499 日）得 20 單、+12.3R，前後兩半 +2.8R（4 單）/ +9.5R（16 單），持倉中位 13 粒鐘，冇計 funding：樣本細，係 paper 試驗。</p>
     <h3>戶口同風險</h3>
     <div class="grid">${num('universe', 'Watch 幾多隻（成交額排名）', 1)}${num('minVolume', '最少 24h 成交額（USDT）', 1000)}
     ${num('riskPct', '每單風險（淨值 %）')}${num('maxNotional', '每單最大名義（USDT）')}${num('levCap', '總槓桿上限（×）')}
     ${num('maxOpen', '持倉 + 掛單上限', 1)}${num('picks', '北牆心水數目', 1)}${num('minNetRR', '最少 net R:R')}${num('maxSpreadPct', '最大點差 %')}
-    ${num('fee', '每邊 taker 手續費（0.0004 = 0.04%）')}${num('slip', '離場滑價（0.0005 = 0.05%）')}${num('timeExitMin', '時間離場（分鐘）', 1)}
+    ${num('fee', '每邊 taker 手續費（0.0004 = 0.04%）')}${num('slip', '離場滑價（0.0005 = 0.05%）')}${num('timeExitMin', '時間離場（分鐘，留空 = 冇）', 1, '冇')}
     <label>一定要 watch（逗號分隔）<input data-cfg="always" value="${esc(c.always.join(','))}"></label>
     <label>排除（逗號分隔）<input data-cfg="exclude" value="${esc(c.exclude.join(','))}"></label></div>
     <p><label class="switch"><input type="checkbox" data-cfg="picksOnly" ${c.picksOnly ? 'checked' : ''}> PMR Trader 只做心水牆上面嘅 proposal</label></p>
+    <h3>K 線來源</h3>
+    <div class="grid">${[['pmrSource', 'PMR Trader 用'], ['smcSource', 'SMC Trader 用']].map(([k, l]) => `<label>${l}<select data-cfg="${k}">${[['mark', 'Mark price K 線'], ['trade', '成交 K 線']].map(([v, t]) => `<option value="${v}" ${(c[k] ?? 'trade') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`).join('')}</div>
+    <p class="muted">Aster 股票 perp 成交好薄：成交 1m K 線喺美股交易時段都有 36–97% 係平嘅（冇成交），形態好難成立。Mark price K 線每分鐘都郁，但冇成交量，薄 book 實際成交可能差過 mark。PMR 預設用 mark；SMC 預設用成交，因為佢喺 499 日 mark 數據回測入面 0 單。心水牆 chart 跟 PMR 嘅來源。Taker 資金流同成交量情報永遠用成交 K 線。轉來源唔會郁已經有嘅倉同掛單，但之後會用新 K 線管理。</p>
     <label>SMC Trader 掃<select data-cfg="smcScope">${[['watch', '所有 watch 緊嘅股（減剔走）'], ['picks', '淨係心水牆']].map(([v, l]) => `<option value="${v}" ${c.smcScope === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>3D 房</h3><label>滑鼠視角<select data-look>${[['follow', '跟住滑鼠位置（唔使撳）'], ['fast', '跟住滑鼠位置，轉得多啲'], ['drag', '淨係拖住先轉']].map(([v, l]) => `<option value="${v}" ${world.look === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <p class="muted">跟住滑鼠：視線跟 cursor 喺畫面嘅位置，cursor 擺返正中（有個細圈）就望返正前面，所以 cursor 走遠咗都唔會迷失方向；擺去左右最邊就繼續轉。C 將視線擺返水平。撳一下照樣可以揀枱同牆。</p>
@@ -587,6 +594,8 @@ $('#panel').addEventListener('change', e => {
   let v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
   if (['always', 'exclude'].includes(k)) v = String(v).toUpperCase().split(',').map(x => x.trim()).filter(Boolean);
   else if (k === 'smcScope') v = v === 'picks' ? 'picks' : 'watch';
+  else if (k === 'pmrSource' || k === 'smcSource') v = v === 'mark' ? 'mark' : 'trade';
+  else if (k === 'timeExitMin' && String(v).trim() === '') v = null;
   else if (typeof v === 'string') { v = Number(v); if (!Number.isFinite(v)) return; }
   mutate(s => { s.cfg[k] = v; });
 });
@@ -627,7 +636,7 @@ $('#settingsBtn').addEventListener('click', () => open('settings'));
 
 addEventListener('pagehide', () => { flushMarks(); });
 
-globalThis.__desk = { world, wall, get state() { return state; } };
+globalThis.__desk = { world, wall, render, get state() { return state; } };
 render();
 // Wall and monitor textures are canvas text: redraw once the Chinese web font has arrived.
 document.fonts?.ready.then(() => render());

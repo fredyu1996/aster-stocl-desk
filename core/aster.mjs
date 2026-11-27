@@ -49,13 +49,17 @@ export function pickUniverse(info, tickers, cfg, held = []) {
   return { watch, board: rows, specs: Object.fromEntries(watch.map(s => [s, specs.get(s)])) };
 }
 
-export async function fetchBars(symbol, { since = 0, minutes = HISTORY_MIN, now = Date.now(), get = asterGet } = {}) {
+// source 'trade' = traded klines; 'mark' = mark-price klines (Fred, 2026-11-26: the traded 1m klines of Aster stock perps are
+// 36–97 % flat even in US hours; mark klines move every minute). Mark klines have zero volume.
+export const BAR_SOURCES = ['mark', 'trade'];
+const KLINES = { trade: '/fapi/v1/klines', mark: '/fapi/v1/markPriceKlines' };
+export async function fetchBars(symbol, { since = 0, minutes = HISTORY_MIN, now = Date.now(), get = asterGet, source = 'trade' } = {}) {
   const lastClosed = Math.floor(now / MIN) * MIN; // close time of the latest fully completed minute
   const from = Math.max(since + 1, lastClosed - minutes * MIN);
   const bars = [];
   let start = from - MIN;
   for (let guard = 0; guard < 8 && start + MIN <= lastClosed; guard++) {
-    const rows = await get('/fapi/v1/klines', { symbol, interval: '1m', startTime: start, limit: 1500 });
+    const rows = await get(KLINES[source] ?? KLINES.trade, { symbol, interval: '1m', startTime: start, limit: 1500 });
     if (!Array.isArray(rows) || !rows.length) break;
     for (const r of rows) {
       const b = klineBar(r);
@@ -77,30 +81,34 @@ export async function loadMarket(cfg, held = [], { get = asterGet, now = Date.no
   ]);
   if (cache && cache.info !== info) Object.assign(cache, { info, infoAt: now });
   const universe = pickUniverse(info, tickers, cfg, held);
-  const bars = {};
-  const queue = [...universe.watch];
+  // Bars per source: the PMR Trader's (cfg.pmrSource), the SMC Trader's (cfg.smcSource), and traded klines always (intel).
+  const pmrSource = cfg.pmrSource === 'mark' ? 'mark' : 'trade', smcSource = cfg.smcSource === 'mark' ? 'mark' : 'trade';
+  const sources = [...new Set([pmrSource, smcSource, 'trade'])];
+  const barsBy = Object.fromEntries(sources.map(s => [s, {}]));
+  const queue = sources.flatMap(source => universe.watch.map(symbol => [source, symbol]));
   const worker = async () => {
-    for (let symbol; (symbol = queue.shift());) {
-      const old = cache?.bars?.[symbol] ?? [];
-      const fresh = await fetchBars(symbol, { since: old.at(-1)?.t ?? 0, now, get });
-      const merged = old.concat(fresh).filter(b => b.t > now - HISTORY_MIN * MIN - MIN);
-      bars[symbol] = merged;
+    for (let job; (job = queue.shift());) {
+      const [source, symbol] = job;
+      const old = cache?.barsBy?.[source]?.[symbol] ?? [];
+      const fresh = await fetchBars(symbol, { since: old.at(-1)?.t ?? 0, now, get, source });
+      barsBy[source][symbol] = old.concat(fresh).filter(b => b.t > now - HISTORY_MIN * MIN - MIN);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  if (cache) cache.bars = bars;
+  if (cache) cache.barsBy = barsBy;
+  const bars = barsBy[pmrSource];
   const book = Object.fromEntries(books.filter(b => universe.specs[b.symbol]).map(b => [b.symbol, { bid: +b.bidPrice, ask: +b.askPrice, t: b.time }]));
   const funding = Object.fromEntries(premium.filter(p => universe.specs[p.symbol]).map(p => [p.symbol,
     { rate: +p.lastFundingRate, next: +p.nextFundingTime, mark: +p.markPrice }]));
-  return { t: now, universe, bars, book, funding, info };
+  return { t: now, universe, bars, smcBars: barsBy[smcSource], tradeBars: barsBy.trade, pmrSource, smcSource, book, funding, info };
 }
 
 // Chart-only klines for the Picks wall. t = open time; `closed` is false for the forming candle.
 // Never used for trading decisions: the scanner and paper fills only use completed 1m bars from fetchBars.
 export const CHART_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'];
-export async function chartBars(symbol, interval, { limit = 600, endTime, get = asterGet, now = Date.now() } = {}) {
+export async function chartBars(symbol, interval, { limit = 600, endTime, get = asterGet, now = Date.now(), source = 'trade' } = {}) {
   if (!CHART_INTERVALS.includes(interval)) throw new Error(`Unsupported chart interval ${interval}`);
-  const rows = await get('/fapi/v1/klines', { symbol, interval, limit: Math.min(1500, limit), ...(endTime ? { endTime } : {}) });
+  const rows = await get(KLINES[source] ?? KLINES.trade, { symbol, interval, limit: Math.min(1500, limit), ...(endTime ? { endTime } : {}) });
   return (Array.isArray(rows) ? rows : []).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5], closed: +k[6] < now }))
     .filter(b => Number.isFinite(b.t) && [b.o, b.h, b.l, b.c].every(n => n > 0));
 }

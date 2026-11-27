@@ -6,7 +6,12 @@
 //    on 15m / 1h views built from the same 1m bars (core/smc.mjs, as aster-desk's own backtester). One $1,000 account.
 // Not modelled: picks (every symbol counts as a pick), Fred's chart marks (none drawn in the past), spread (no book history),
 // funding, and symbols delisted since (the list is today's top by volume).
-// Env: BT_DAYS (default 180), BT_TOP (default 10), BT_OUT (default report/stock-backtest.json), BT_SYMBOLS (comma list, optional).
+// Env: BT_DAYS (default 180; 'max' = from each symbol's listing), BT_TOP (default 10), BT_OUT (default report/stock-backtest.json),
+// BT_SYMBOLS (comma list, optional), BT_SOURCE ('trade' = traded 1m klines, default; 'mark' = mark-price 1m klines),
+// BT_VARIANTS ('0' skips the PMR variants table, for long runs), BT_CACHE (dir for fetched bars, optional), BT_SMC ('0' skips SMC).
+// Data (checked 2026-11-26): Aster stock perps trade thinly, so 36–97 % of traded 1m candles are flat (no trades) even in US
+// hours, while mark-price candles move every minute and go back to each listing (NVDA / TSLA / AAPL / AMZN / META / MSFT from
+// 2025-07). Mark candles have no volume and fills in a thin book can be worse than the mark, so 'mark' is a price-path study.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,11 +36,11 @@ async function aster(p) {
     await sleep(2000 * 2 ** a);
   }
 }
-// completed 1m bars (desk shape, t = close time) with close time in (from, to]
-export async function bars1m(symbol, from, to, get = aster) {
-  const out = [];
+// completed 1m bars (desk shape, t = close time) with close time in (from, to]; source 'mark' reads mark-price klines
+export async function bars1m(symbol, from, to, get = aster, source = 'trade') {
+  const out = [], ep = source === 'mark' ? 'markPriceKlines' : 'klines';
   for (let t = from - MIN; t < to;) {
-    const rows = await get(`/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${t}&limit=1500`);
+    const rows = await get(`/fapi/v1/${ep}?symbol=${symbol}&interval=1m&startTime=${t}&limit=1500`);
     if (!Array.isArray(rows) || !rows.length) break;
     for (const k of rows) { const b = klineBar(k); if (b && b.t > from && b.t <= to) out.push(b); }
     const next = +rows.at(-1)[0] + MIN;
@@ -43,6 +48,20 @@ export async function bars1m(symbol, from, to, get = aster) {
     t = next;
   }
   return out;
+}
+
+// BT_CACHE=dir keeps fetched 1m bars per source and symbol (JSON), so a rerun only fetches what is new.
+async function cachedBars(symbol, from, to, source) {
+  const dir = process.env.BT_CACHE;
+  if (!dir) return bars1m(symbol, from, to, aster, source);
+  const file = path.join(dir, `${source}-${symbol}.json`);
+  let have = [];
+  try { have = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* no cache yet */ }
+  if (!have.length || have[0].t > from + 2 * MIN) have = await bars1m(symbol, from, to, aster, source);
+  else if (have.at(-1).t < to) have = have.concat(await bars1m(symbol, have.at(-1).t, to, aster, source));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(have));
+  return have.filter(b => b.t > from && b.t <= to);
 }
 
 // ---------- statistics ----------
@@ -103,12 +122,22 @@ export const PMR_VARIANTS = {
   'all loosened + R:R 1.5': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0 }, rr: 1.5 },
   'v1.4 timing, target 2.5R': { p: { targetR: 2.5 } },
   'all loosened, target 2.5R': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5 },
+  // Fred, 2026-11-26: 試下唔要時間限制 (on mark klines 39 of 47 loose-2.5R trades ended on the 90-min time exit).
+  // te = time exit in minutes; Infinity = held until stop or target. Funding is not modelled, which flatters long holds.
+  'all loosened, target 2.5R, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5, te: Infinity },
+  'all loosened, target 2.5R, time exit 1 day': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 2.5 }, rr: 1.5, te: 1440 },
+  'all loosened, target 1.5R, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0, targetR: 1.5 }, rr: 1.2, te: Infinity },
+  'all loosened + R:R 1.5, no time exit': { p: { ...W2, dispAtr: 0.8, poiDistAtr: 1.0 }, rr: 1.5, te: Infinity },
+  'v1.4 timing, target 2.5R, no time exit': { p: { targetR: 2.5 }, te: Infinity },
 };
+const median = xs => { if (!xs.length) return null; const a = [...xs].sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
 export function pmrVariants(data, { from, specs, split }) {
   return Object.entries(PMR_VARIANTS).map(([name, v]) => {
-    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? V14_RR }, from, specs, params: v.p ?? {}, funnel });
+    const funnel = {}, r = pmrRun(data, { cfg: { ...DEFAULT_CFG, minNetRR: v.rr ?? V14_RR, timeExitMin: v.te ?? DEFAULT_CFG.timeExitMin }, from, specs, params: v.p ?? {}, funnel });
     const rep = report(r.rows, split);
-    return { name, params: v.p ?? {}, minNetRR: v.rr ?? V14_RR, proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves,
+    const exits = {}; for (const x of r.rows) exits[x.why] = (exits[x.why] ?? 0) + 1;
+    return { name, params: v.p ?? {}, minNetRR: v.rr ?? V14_RR, timeExitMin: Number.isFinite(v.te ?? DEFAULT_CFG.timeExitMin) ? v.te ?? DEFAULT_CFG.timeExitMin : null,
+      proposals: r.proposals, declined: r.declined, all: rep.all, halves: rep.halves, open: r.open, exits, holdMin: median(r.rows.map(x => (x.t1 - x.t0) / MIN)),
       funnel: { breakouts: funnel.CONFIRMED_1H_BREAKOUT ?? 0, poi: funnel.FRESH_CAUSAL_15M_POI ?? 0, retest: funnel.FIRST_PARENT_RETEST ?? 0, mss: funnel['5M_MSS_DISPLACEMENT'] ?? 0, proposals: funnel.PROPOSAL ?? 0 } };
   });
 }
@@ -127,36 +156,48 @@ export async function smcRun(data, { from, to, exInfo, src }) {
   return { rows, open: h.positions().length, equity: r3(h.equity()), skips: Object.fromEntries(Object.entries(skips).sort((a, b) => b[1] - a[1]).slice(0, 12)) };
 }
 
-export async function run({ days = 180, top = 10, symbols, now = Date.now() } = {}) {
-  const T0 = Date.now(), END = Math.floor(now / M5) * M5, W0 = END - days * DAY, split = W0 + (END - W0) / 2;
+export async function run({ days = 180, top = 10, symbols, now = Date.now(), source = 'trade', variants: withVariants = true } = {}) {
+  const T0 = Date.now(), END = Math.floor(now / M5) * M5, full = days === 'max';
+  let W0 = full ? Date.UTC(2025, 6, 1) : END - days * DAY;
   const [exInfo, tickers] = await Promise.all([aster('/fapi/v1/exchangeInfo'), aster('/fapi/v1/ticker/24hr')]);
   const stocks = new Map(exInfo.symbols.filter(isStock).map(s => [s.symbol, s]));
   const list = symbols?.length ? symbols : tickers.filter(t => stocks.has(t.symbol)).sort((a, b) => +b.quoteVolume - +a.quoteVolume).slice(0, top).map(t => t.symbol);
   const specs = Object.fromEntries(list.map(s => [s, specOf(stocks.get(s))]));
   const data = {}, coverage = {};
-  for (const s of list) {
-    const b = await bars1m(s, W0 - WARM, END);
-    if (b.length < 1000) { log(`skip ${s}: ${b.length} bars`); continue; }
-    data[s] = b; coverage[s] = { first: b[0].t, bars: b.length };
-    log(`${s}: ${b.length} 1m bars from ${new Date(b[0].t).toISOString().slice(0, 10)}`);
-  }
+  // Four symbols at a time (each request ~0.6 s; the request spacing in aster() keeps the rate polite).
+  const queue = [...list];
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+    for (let s; (s = queue.shift());) {
+      const b = await cachedBars(s, W0 - WARM, END, source);
+      if (b.length < 1000) { log(`skip ${s}: ${b.length} bars`); continue; }
+      const flat = Math.round(b.filter(x => x.h === x.l).length / b.length * 100);
+      data[s] = b; coverage[s] = { first: b[0].t, bars: b.length, flatPct: flat };
+      log(`${s}: ${b.length} 1m ${source} bars from ${new Date(b[0].t).toISOString().slice(0, 10)} · ${flat}% flat`);
+    }
+  }));
+  for (const k of Object.keys(data).sort((a, b) => list.indexOf(a) - list.indexOf(b))) { const v = data[k]; delete data[k]; data[k] = v; }
+  // 'max': the window starts at the earliest bar fetched (plus warm-up); the halves split that window.
+  if (full) W0 = Math.min(...Object.values(data).map(b => b[0].t)) + WARM;
+  const split = W0 + (END - W0) / 2;
   const pmr = pmrRun(data, { from: W0, specs });
   log(`PMR: ${pmr.proposals} proposals, ${pmr.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
-  const variants = pmrVariants(data, { from: W0, specs, split });
-  const smc = await smcRun(data, { from: W0, to: END, exInfo });
+  const variants = withVariants ? pmrVariants(data, { from: W0, specs, split }) : null;
+  const smc = process.env.BT_SMC === '0' ? { rows: [], open: 0, equity: null, skips: {} } : await smcRun(data, { from: W0, to: END, exInfo });
   log(`SMC: ${smc.rows.length} trades (${((Date.now() - T0) / 1e3).toFixed(0)} s)`);
-  return { v: 1, t: Date.now(), from: W0, to: END, days, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
+  return { v: 1, t: Date.now(), from: W0, to: END, days: Math.round((END - W0) / DAY), source, split, symbols: Object.keys(data), coverage, runS: Math.round((Date.now() - T0) / 1e3),
     pmr: { ...report(pmr.rows, split), variants, proposals: pmr.proposals, declined: pmr.declined, open: pmr.open, equity: pmr.equity, cfg: { preset: DEFAULT_CFG.pmrPreset, riskPct: DEFAULT_CFG.riskPct, maxOpen: DEFAULT_CFG.maxOpen, minNetRR: DEFAULT_CFG.minNetRR, timeExitMin: DEFAULT_CFG.timeExitMin } },
     smc: { ...report(smc.rows, split), open: smc.open, equity: smc.equity, skips: smc.skips, source: SMC_SOURCE, adj: SMC_ADJ },
     notes: ['Report only: never changes live rules or accounts.', 'Every symbol counts as a pick; Fred\'s marks, spread and funding are not modelled.',
       'Symbols are today\'s top stock perps by 24h volume, so delisted ones are missing. Symbols listed less than the window only count from their first bar.',
-      'R: PMR = net P&L / planned risk (fees and slippage in the risk); SMC = realized P&L / risk at entry, as on the crypto desk.'] };
+      'R: PMR = net P&L / planned risk (fees and slippage in the risk); SMC = realized P&L / risk at entry, as on the crypto desk.',
+      'Variants without the 90-min time exit hold for hours (median shown); funding is not modelled, which flatters long holds.'] };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const out = process.env.BT_OUT || 'report/stock-backtest.json';
   try {
-    const r = await run({ days: +process.env.BT_DAYS || 180, top: +process.env.BT_TOP || 10, symbols: process.env.BT_SYMBOLS?.split(',').filter(Boolean) });
+    const r = await run({ days: process.env.BT_DAYS === 'max' ? 'max' : +process.env.BT_DAYS || 180, top: +process.env.BT_TOP || 10,
+      symbols: process.env.BT_SYMBOLS?.split(',').filter(Boolean), source: process.env.BT_SOURCE === 'mark' ? 'mark' : 'trade', variants: process.env.BT_VARIANTS !== '0' });
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, JSON.stringify(r));
     const f = s => s.n ? `n ${s.n} win ${s.win}% avg ${s.avgR >= 0 ? '+' : ''}${s.avgR}R tot ${s.totR}R maxDD ${s.maxDD}R` : 'n 0';

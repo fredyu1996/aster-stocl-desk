@@ -57,6 +57,9 @@ export const RULES = {
 export const ruleKey = r => `${r.rule}:${r.value ?? ''}`;
 export const ruleLabel = r => RULES[r.rule]?.label(r.value ?? '') ?? r.rule;
 
+// Time exit in ms after entry; Infinity when cfg.timeExitMin is null / 0 (held until stop or target).
+export const timeExitMs = cfg => Number.isFinite(cfg.timeExitMin) && cfg.timeExitMin > 0 ? cfg.timeExitMin * 60_000 : Infinity;
+
 // Decide on one proposal. Returns { ok, reason, size } where size has qty, riskUSDT, netRR.
 export function preTrade(plan, { cfg, equity, openNotional, openCount, holding, spec, book, funding, active }) {
   const f = features(plan);
@@ -67,7 +70,8 @@ export function preTrade(plan, { cfg, equity, openNotional, openCount, holding, 
     const spread = (book.ask - book.bid) / ((book.ask + book.bid) / 2) * 100;
     if (spread > cfg.maxSpreadPct) return { ok: false, reason: `SPREAD ${spread.toFixed(2)}% > ${cfg.maxSpreadPct}%` };
   }
-  const due = funding && funding.next > plan.signalAt && funding.next < plan.expiresAt + cfg.timeExitMin * 60_000;
+  // With no time exit the hold is open-ended, so the next funding always counts.
+  const due = funding && funding.next > plan.signalAt && funding.next < plan.expiresAt + timeExitMs(cfg);
   const e = economics(plan, cfg, funding?.rate ?? 0, due);
   if (!(e.netRR >= cfg.minNetRR)) return { ok: false, reason: `NET_RR ${Number.isFinite(e.netRR) ? e.netRR.toFixed(2) : '—'} < ${cfg.minNetRR}`, netRR: e.netRR };
   const riskUSDT = equity * cfg.riskPct / 100;

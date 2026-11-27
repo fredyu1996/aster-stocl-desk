@@ -1,21 +1,24 @@
 // Desk state and one trading cycle. The same code runs in the browser and in the cloud bot (bot/run.mjs).
 // Paper only: fills, stops and targets are simulated on completed Aster 1m bars.
-import { MIN, PMR_PRESETS, PMR_PRESET_DEFAULT, Scanner, intel } from './pmr.mjs';
+import { MIN, PMR_PRESETS, PMR_PRESET_DEFAULT, PMR_PRESET_REV, Scanner, fiveMinute, intel } from './pmr.mjs';
 import { postmortem } from './postmortem.mjs';
-import { grade, learn, markCheck, preTrade, ruleKey } from './reviewer.mjs';
+import { grade, learn, markCheck, preTrade, ruleKey, timeExitMs } from './reviewer.mjs';
 
 export const START = 1000;
 export const DEFAULT_CFG = {
   on: true, universe: 10, minVolume: 300_000, always: [], exclude: [],
   riskPct: 1, maxNotional: 1000, levCap: 10, maxOpen: 3,
-  fee: 0.0004, slip: 0.0005, minNetRR: PMR_PRESETS[PMR_PRESET_DEFAULT].minNetRR, maxSpreadPct: 0.15, timeExitMin: 90,
-  picks: 6, picksOnly: true, smcScope: 'watch', pmrPreset: PMR_PRESET_DEFAULT, pmr: { ...PMR_PRESETS[PMR_PRESET_DEFAULT].pmr },
+  fee: 0.0004, slip: 0.0005, minNetRR: PMR_PRESETS[PMR_PRESET_DEFAULT].minNetRR, maxSpreadPct: 0.15, timeExitMin: PMR_PRESETS[PMR_PRESET_DEFAULT].timeExitMin,
+  // Bar sources (Fred, 2026-11-26: 改用 mark price). The SMC Trader stays on traded klines by default: on 499 days of mark
+  // klines it took 0 trades (2026-11-26 backtest); Settings switches either.
+  pmrSource: 'mark', smcSource: 'trade',
+  picks: 6, picksOnly: true, smcScope: 'watch', pmrPreset: PMR_PRESET_DEFAULT, presetRev: PMR_PRESET_REV, pmr: { ...PMR_PRESETS[PMR_PRESET_DEFAULT].pmr },
 };
 // Switch the PMR Trader to a preset: its Scanner params and its net R:R floor move together.
 export function applyPmrPreset(cfg, name) {
   const p = PMR_PRESETS[name];
   if (!p) return cfg;
-  return Object.assign(cfg, { pmrPreset: name, pmr: { ...p.pmr }, minNetRR: p.minNetRR });
+  return Object.assign(cfg, { pmrPreset: name, pmr: { ...p.pmr }, minNetRR: p.minNetRR, timeExitMin: p.timeExitMin ?? null });
 }
 
 // Screener picks: the shortlist posted on the north wall. The Trader only takes PMR proposals on these.
@@ -48,7 +51,11 @@ export function normalize(state) {
   const s = Object.assign(base, state ?? {});
   s.cfg = Object.assign({ ...DEFAULT_CFG }, state?.cfg ?? {});
   // Accounts saved before presets existed ran v1.4 (pmr {}); Fred switched them to the default preset on 2026-11-26.
-  if (state?.cfg && !state.cfg.pmrPreset) applyPmrPreset(s.cfg, PMR_PRESET_DEFAULT);
+  // Fred moved live paper to a new default (rev 1 = loose-2.5R, 2026-11-26; rev 2 = loose-1.5R-hold, 2026-11-26): an account
+  // saved under an older rev takes the new default once; his own choice after that stands.
+  if (state?.cfg && !((state.cfg.presetRev ?? (state.cfg.pmrPreset ? 1 : 0)) >= PMR_PRESET_REV)) {
+    applyPmrPreset(s.cfg, PMR_PRESET_DEFAULT); s.cfg.presetRev = PMR_PRESET_REV;
+  }
   s.acct = Object.assign(base.acct, state?.acct ?? {});
   s.rules = Object.assign({ active: [], decided: {}, proposals: [] }, state?.rules ?? {});
   for (const k of ['picks', 'pins', 'skips']) if (!Array.isArray(s[k])) s[k] = [];
@@ -104,7 +111,7 @@ function manage(state, p, bars, cfg, funding) {
       const at = d === 1 ? Math.max(b.o, p.target) : Math.min(b.o, p.target);
       return closePosition(state, p, b, fix(at * (1 - d * cfg.slip)), 'Target', cfg);
     }
-    if (b.t >= p.entryAt + cfg.timeExitMin * MIN) return closePosition(state, p, b, fix(b.c * (1 - d * cfg.slip)), 'Time exit', cfg);
+    if (b.t >= p.entryAt + timeExitMs(cfg)) return closePosition(state, p, b, fix(b.c * (1 - d * cfg.slip)), 'Time exit', cfg);
   }
   if (funding && !p.fundNext) Object.assign(p, { fundNext: funding.next, fundRate: funding.rate });
 }
@@ -156,7 +163,9 @@ export function cycle(input, market, { now = market.t, by = 'cloud', makeScanner
     if (!series.length) continue;
     const sc = makeScanner(symbol, series, { tickSize: universe.specs[symbol]?.tickSize, params: cfg.pmr });
     scanners[symbol] = sc;
-    intelItems.push(...intel(sc));
+    // Mark-price bars have no volume: taker-flow / volume intel comes from traded klines when they are loaded.
+    const traded = market.tradeBars && market.tradeBars !== bars ? market.tradeBars[symbol] : null;
+    intelItems.push(...intel(traded ? { symbol, history: { 5: fiveMinute(traded) } } : sc));
   }
 
   for (const o of [...state.orders]) work(state, o, bars[o.symbol] ?? [], scanners[o.symbol], cfg, funding[o.symbol]);

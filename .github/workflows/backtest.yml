@@ -5,8 +5,11 @@ name: backtest
 on:
   workflow_dispatch:
     inputs:
-      days: { description: 'Days', default: '180' }
+      days: { description: "Days, or 'max' = from each symbol's listing", default: '180' }
       top: { description: 'Top N stock perps by 24h volume', default: '10' }
+      symbols: { description: 'Comma list instead of top N (e.g. NVDAUSDT,TSLAUSDT)', default: '' }
+      source: { description: "'trade' = traded 1m klines, 'mark' = mark-price 1m klines (full history)", default: 'trade' }
+      variants: { description: "PMR variants table ('0' = skip, faster)", default: '1' }
   schedule:
     - cron: '17 9 * * *'
 concurrency:
@@ -17,17 +20,27 @@ permissions:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: node --test
-      - run: node bot/backtest.mjs
+      # Fetched 1m bars are cached between runs, so a rerun only downloads what is new.
+      - uses: actions/cache@v4
+        with:
+          path: .bt-cache
+          key: bt-bars-${{ github.run_id }}
+          restore-keys: bt-bars-
+      - run: node --max-old-space-size=6000 bot/backtest.mjs
         env:
           BT_DAYS: ${{ inputs.days || '180' }}
           BT_TOP: ${{ inputs.top || '10' }}
+          BT_SYMBOLS: ${{ inputs.symbols || '' }}
+          BT_SOURCE: ${{ inputs.source || 'trade' }}
+          BT_VARIANTS: ${{ inputs.variants || '1' }}
+          BT_CACHE: .bt-cache
           BT_OUT: out/stock-backtest.json
       - name: Publish to branch backtest-report
         run: |
