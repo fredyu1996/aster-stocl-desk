@@ -6,7 +6,7 @@ export const MIN = 60_000;
 export const PATTERNS = ['FLAG', 'TRIANGLE', 'DOUBLE_TOP', 'DOUBLE_BOTTOM', 'HNS', 'INVERSE_HNS'];
 
 // 1m bars use `t` = close time (open time + 1 minute), like Market Floor.
-function aggregate(bars, span) {
+export function aggregate(bars, span) {
   const completed = new Map();
   let bucket;
   for (const bar of bars) {
